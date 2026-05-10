@@ -1,0 +1,445 @@
+/* ── LOCAL ONLY — Tailwind v4 version of index.css ──────────────────────
+   File ini TIDAK di-commit ke GitHub (ada di .gitignore).
+   src/index.css adalah versi Tailwind v3 (untuk kompatibilitas build).
+   Local dev pakai file ini via alias di vite.config.ts.
+   Kalau ada update CSS variables di index.css → update juga di sini.
+─────────────────────────────────────────────────────────────────────── */
+
+@import "tailwindcss";
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar-background: hsl(var(--sidebar-background));
+  --color-sidebar-foreground: hsl(var(--sidebar-foreground));
+  --color-sidebar-primary: hsl(var(--sidebar-primary));
+  --color-sidebar-primary-foreground: hsl(var(--sidebar-primary-foreground));
+  --color-sidebar-accent: hsl(var(--sidebar-accent));
+  --color-sidebar-accent-foreground: hsl(var(--sidebar-accent-foreground));
+  --color-sidebar-border: hsl(var(--sidebar-border));
+  --color-sidebar-ring: hsl(var(--sidebar-ring));
+  --color-chart-1: hsl(var(--chart-1));
+  --color-chart-2: hsl(var(--chart-2));
+  --color-chart-3: hsl(var(--chart-3));
+  --color-chart-4: hsl(var(--chart-4));
+  --color-chart-5: hsl(var(--chart-5));
+}
+
+@layer base {
+  :root {
+    /* ── Surface & Text ──────────────────────────────────────────────── */
+    --background: 210 20% 98%;
+    --foreground: 222 47% 11%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+
+    --primary: 0 0% 12%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 210 20% 96%;
+    --secondary-foreground: 222 47% 11%;
+
+    --muted: 210 20% 96%;
+    --muted-foreground: 215 16% 47%;
+
+    --accent: 210 20% 94%;
+    --accent-foreground: 222 47% 11%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: 0 0% 12%;
+
+    --radius: 0.5rem;
+
+    /* ── Feedback Semantic Colors ──────────────────────────────────── */
+    --success:            142 71% 40%;
+    --success-foreground: 0 0% 100%;
+    --success-bg:         142 71% 95%;
+
+    --warning:            38 92% 48%;
+    --warning-foreground: 38 92% 15%;
+    --warning-bg:         38 92% 95%;
+
+    --info:               210 90% 52%;
+    --info-foreground:    0 0% 100%;
+    --info-bg:            210 90% 95%;
+
+    --error:              0 84% 60%;
+    --error-foreground:   0 0% 100%;
+    --error-bg:           0 84% 96%;
+
+    /* ── Neutral Scale (slate-flavored) ──────────────────────────── */
+    --neutral-50:  210 20% 98%;
+    --neutral-100: 214 32% 95%;
+    --neutral-200: 214 32% 91%;
+    --neutral-300: 213 27% 84%;
+    --neutral-400: 215 20% 69%;
+    --neutral-500: 215 16% 55%;
+    --neutral-600: 215 19% 40%;
+    --neutral-700: 215 25% 27%;
+    --neutral-800: 217 33% 17%;
+    --neutral-900: 222 47% 11%;
+
+    /* ── Sidebar ──────────────────────────────────────────────────── */
+    --sidebar-background: 0 0% 100%;
+    --sidebar-foreground: 220 13% 40%;
+    --sidebar-primary: 0 0% 12%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 0 0% 12%;
+    --sidebar-accent-foreground: 0 0% 100%;
+    --sidebar-border: 214 32% 91%;
+    --sidebar-ring: 0 0% 12%;
+
+    /* ── Navbar ───────────────────────────────────────────────────── */
+    --navbar-background: 0 0% 100%;
+    --navbar-border: 214 32% 91%;
+
+    /* ── Status Colors ────────────────────────────────────────────── */
+    --status-available:    142 71% 45%;
+    --status-available-bg: 142 71% 95%;
+    --status-available-fg: 142 71% 28%;
+
+    --status-coming-soon:    210 90% 52%;
+    --status-coming-soon-bg: 210 90% 95%;
+    --status-coming-soon-fg: 210 90% 30%;
+
+    --status-reserved:    38 92% 50%;
+    --status-reserved-bg: 38 92% 95%;
+    --status-reserved-fg: 38 92% 28%;
+
+    --status-service:    262 60% 55%;
+    --status-service-bg: 262 60% 95%;
+    --status-service-fg: 262 60% 35%;
+
+    --status-sold:    215 16% 55%;
+    --status-sold-bg: 215 16% 94%;
+    --status-sold-fg: 215 16% 30%;
+
+    --status-lost:    0 72% 51%;
+    --status-lost-bg: 0 72% 95%;
+    --status-lost-fg: 0 72% 30%;
+
+    --status-return:    24 95% 53%;
+    --status-return-bg: 24 95% 95%;
+    --status-return-fg: 24 95% 30%;
+
+    --status-no-minus:    142 71% 45%;
+    --status-no-minus-bg: 142 71% 95%;
+    --status-no-minus-fg: 142 71% 28%;
+
+    --status-minus:    24 95% 53%;
+    --status-minus-bg: 24 95% 95%;
+    --status-minus-fg: 24 95% 30%;
+
+    --status-active:    142 71% 45%;
+    --status-active-bg: 142 71% 95%;
+    --status-active-fg: 142 71% 28%;
+
+    --status-inactive:    215 16% 55%;
+    --status-inactive-bg: 215 16% 94%;
+    --status-inactive-fg: 215 16% 30%;
+
+    /* ── Misc ────────────────────────────────────────────────────── */
+    --hero-glow:   210 90% 52%;
+    --hero-glow-2: 197 100% 63%;
+    --star:        38 92% 50%;
+
+    --chart-1: 12 76% 61%;
+    --chart-2: 173 58% 39%;
+    --chart-3: 197 37% 24%;
+    --chart-4: 43 74% 66%;
+    --chart-5: 27 87% 67%;
+  }
+
+  .dark {
+    --background: 222 47% 11%;
+    --foreground: 210 20% 98%;
+    --card: 222 47% 13%;
+    --card-foreground: 210 20% 98%;
+    --popover: 222 47% 13%;
+    --popover-foreground: 210 20% 98%;
+    --primary: 210 20% 98%;
+    --primary-foreground: 222 47% 11%;
+    --secondary: 217 33% 17%;
+    --secondary-foreground: 210 20% 98%;
+    --muted: 217 33% 17%;
+    --muted-foreground: 215 20% 65%;
+    --accent: 217 33% 17%;
+    --accent-foreground: 210 20% 98%;
+    --destructive: 0 62% 30%;
+    --destructive-foreground: 210 20% 98%;
+    --border: 217 33% 17%;
+    --input: 217 33% 17%;
+    --ring: 212 92% 45%;
+
+    --success:            142 71% 35%;
+    --success-foreground: 0 0% 100%;
+    --success-bg:         142 30% 18%;
+    --warning:            38 92% 45%;
+    --warning-foreground: 38 92% 95%;
+    --warning-bg:         38 50% 18%;
+    --info:               210 80% 50%;
+    --info-foreground:    0 0% 100%;
+    --info-bg:            210 50% 18%;
+    --error:              0 70% 45%;
+    --error-foreground:   0 0% 100%;
+    --error-bg:           0 40% 18%;
+
+    --neutral-50:  217 33% 17%;
+    --neutral-100: 217 30% 20%;
+    --neutral-200: 217 27% 25%;
+    --neutral-300: 216 24% 32%;
+    --neutral-400: 215 21% 42%;
+    --neutral-500: 215 18% 55%;
+    --neutral-600: 215 16% 65%;
+    --neutral-700: 214 20% 75%;
+    --neutral-800: 213 25% 85%;
+    --neutral-900: 210 20% 95%;
+
+    --chart-1: 220 70% 50%;
+    --chart-2: 160 60% 45%;
+    --chart-3: 30 80% 55%;
+    --chart-4: 280 65% 60%;
+    --chart-5: 340 75% 55%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Poppins', sans-serif;
+  }
+}
+
+/* ── Typography Scale Utilities ────────────────────────────────────────── */
+@layer components {
+
+  .ds-display-xl {
+    font-size: 2.25rem;
+    font-weight: 800;
+    line-height: 1.1;
+    letter-spacing: -0.025em;
+    @media (min-width: 768px)  { font-size: 3rem; }
+    @media (min-width: 1024px) { font-size: 4rem; }
+  }
+
+  .ds-display-lg {
+    font-size: 1.875rem;
+    font-weight: 700;
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+    @media (min-width: 768px)  { font-size: 2.5rem; }
+    @media (min-width: 1024px) { font-size: 3rem; }
+  }
+
+  .ds-h1 {
+    font-size: 1.75rem;
+    font-weight: 700;
+    line-height: 1.2;
+    letter-spacing: -0.015em;
+    @media (min-width: 768px)  { font-size: 2rem; }
+    @media (min-width: 1024px) { font-size: 2.5rem; }
+  }
+
+  .ds-h2 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    line-height: 1.25;
+    letter-spacing: -0.01em;
+    @media (min-width: 768px)  { font-size: 1.75rem; }
+    @media (min-width: 1024px) { font-size: 2rem; }
+  }
+
+  .ds-h3 {
+    font-size: 1.25rem;
+    font-weight: 600;
+    line-height: 1.3;
+    letter-spacing: -0.008em;
+    @media (min-width: 768px)  { font-size: 1.375rem; }
+    @media (min-width: 1024px) { font-size: 1.5rem; }
+  }
+
+  .ds-h4 {
+    font-size: 1.125rem;
+    font-weight: 600;
+    line-height: 1.4;
+    @media (min-width: 768px)  { font-size: 1.125rem; }
+    @media (min-width: 1024px) { font-size: 1.25rem; }
+  }
+
+  .ds-h5 {
+    font-size: 0.9375rem;
+    font-weight: 600;
+    line-height: 1.45;
+    @media (min-width: 768px)  { font-size: 1rem; }
+    @media (min-width: 1024px) { font-size: 1rem; }
+  }
+
+  .ds-h6 {
+    font-size: 0.875rem;
+    font-weight: 600;
+    line-height: 1.5;
+    letter-spacing: 0.005em;
+  }
+
+  .ds-lead {
+    font-size: 1rem;
+    font-weight: 500;
+    line-height: 1.65;
+    @media (min-width: 768px)  { font-size: 1.125rem; }
+    @media (min-width: 1024px) { font-size: 1.25rem; }
+  }
+
+  .ds-body-lg {
+    font-size: 1rem;
+    font-weight: 400;
+    line-height: 1.65;
+    @media (min-width: 1024px) { font-size: 1.125rem; }
+  }
+
+  .ds-body-md {
+    font-size: 0.875rem;
+    font-weight: 400;
+    line-height: 1.65;
+    @media (min-width: 768px)  { font-size: 0.9375rem; }
+    @media (min-width: 1024px) { font-size: 1rem; }
+  }
+
+  .ds-body-sm {
+    font-size: 0.8125rem;
+    font-weight: 400;
+    line-height: 1.55;
+    @media (min-width: 1024px) { font-size: 0.875rem; }
+  }
+
+  .ds-paragraph {
+    font-size: 0.875rem;
+    font-weight: 400;
+    line-height: 1.75;
+    @media (min-width: 768px)  { font-size: 0.9375rem; }
+    @media (min-width: 1024px) { font-size: 1rem; }
+  }
+
+  .ds-caption {
+    font-size: 0.6875rem;
+    font-weight: 400;
+    line-height: 1.5;
+    color: hsl(var(--muted-foreground));
+    @media (min-width: 768px)  { font-size: 0.75rem; }
+  }
+
+  .ds-label {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    line-height: 1;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .ds-micro {
+    font-size: 0.625rem;
+    font-weight: 500;
+    line-height: 1;
+  }
+}
+
+/* ── Motion Utilities ─────────────────────────────────────────────────── */
+@layer components {
+
+  .ds-transition          { transition: all var(--duration-normal) var(--ease-default); }
+  .ds-transition-colors   { transition: color, background-color, border-color, fill, stroke var(--duration-normal) var(--ease-default); }
+  .ds-transition-opacity  { transition: opacity var(--duration-normal) var(--ease-default); }
+  .ds-transition-transform { transition: transform var(--duration-normal) var(--ease-out); }
+
+  .ds-hover-lift {
+    transition: transform var(--duration-normal) var(--ease-out),
+                box-shadow var(--duration-normal) var(--ease-out);
+    &:hover {
+      transform: translateY(-2px);
+      box-shadow: var(--shadow-md);
+    }
+  }
+
+  .ds-press {
+    transition: transform var(--duration-fast) var(--ease-in);
+    &:active { transform: scale(0.97); }
+  }
+
+  .ds-fade-in   { animation: ds-fade-in   var(--duration-normal) var(--ease-out)    both; }
+  .ds-slide-up  { animation: ds-slide-up  var(--duration-normal) var(--ease-out)    both; }
+  .ds-slide-down { animation: ds-slide-down var(--duration-normal) var(--ease-out)  both; }
+  .ds-scale-in  { animation: ds-scale-in  var(--duration-fast)   var(--ease-spring) both; }
+}
+
+@keyframes ds-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes ds-slide-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes ds-slide-down {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes ds-scale-in {
+  from { opacity: 0; transform: scale(0.95); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+/* ── Scrollbar Utilities ───────────────────────────────────────────────── */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+
+/* ── reCAPTCHA ────────────────────────────────────────────────────────── */
+.grecaptcha-badge {
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transition: opacity 0.2s ease, visibility 0.2s ease;
+}
+
+.grecaptcha-badge.recaptcha-visible {
+  visibility: visible !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}

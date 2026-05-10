@@ -1,0 +1,2216 @@
+import { useEffect, useState, useCallback, useRef } from "react";
+import { useNavigate } from "react-router-dom";
+import { supabase } from "@/integrations/supabase/client";
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const db = supabase as any;
+import { DashboardLayout } from "@/components/layout/DashboardLayout";
+import { SearchableDropdown } from "@/components/shared/SearchableDropdown";
+import { CategoryImagePlaceholder } from "@/components/shared/CategoryImagePlaceholder";
+import { useAuth } from "@/contexts/admin/AuthContext";
+import { useToast } from "@/hooks/shared/use-toast";
+import { logActivity } from "@/lib/admin/laporan/activity-log";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
+} from "@/components/ui/dialog";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
+  DropdownMenuTrigger, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  BookOpen, Search, Plus, LayoutGrid, List, Edit3, Eye,
+  Archive, RefreshCw, ImageOff, Star, Tag, AlertCircle,
+  ExternalLink, Globe, ShoppingCart, Store, X, Upload,
+  Ticket, Percent, DollarSign, Trash2, ChevronRight,
+  Package, Camera, Check, Gift, Key, Sparkles, Loader2,
+  Zap, ChevronDown, Power, PowerOff,
+} from "lucide-react";
+import { cn } from "@/lib/utils";
+import { CATEGORY_LABELS, type ProductCategory } from "@/lib/admin/produk/master-products";
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+interface MasterProduct {
+  id: string;
+  series: string;
+  storage_gb: number;
+  color: string;
+  category: string;
+  warranty_type: string;
+  is_active: boolean;
+}
+
+interface CatalogProduct {
+  id: string;
+  product_id: string;
+  slug: string | null;
+  display_name: string;
+  short_description: string | null;
+  full_description: string | null;
+  thumbnail_url: string | null;
+  gallery_urls: string[];
+  catalog_status: "draft" | "published" | "unpublished";
+  publish_to_pos: boolean;
+  publish_to_web: boolean;
+  publish_to_marketplace: boolean;
+  price_strategy: "min_price" | "avg_price" | "fixed";
+  override_display_price: number | null;
+  highlight_product: boolean;
+  show_condition_breakdown: boolean;
+  promo_label: string | null;
+  updated_at: string;
+  master?: MasterProduct;
+}
+
+interface StockAggregate {
+  product_id: string;
+  total: number;
+  no_minus: number;
+  minus: number;
+  min_price: number | null;
+  avg_price: number | null;
+  max_price: number | null;
+}
+
+interface DiscountCode {
+  id: string;
+  code: string;
+  name: string;
+  description: string | null;
+  discount_type: string;
+  discount_percent: number | null;
+  discount_amount: number | null;
+  min_purchase_amount: number | null;
+  buy_quantity: number | null;
+  get_quantity: number | null;
+  max_uses: number | null;
+  used_count: number;
+  max_uses_per_user: number | null;
+  valid_from: string;
+  valid_until: string | null;
+  applies_to_all: boolean;
+  is_active: boolean;
+}
+
+interface BonusProduct {
+  id: string;
+  name: string;
+  description: string | null;
+  icon: string | null;
+  sort_order: number;
+  is_active: boolean;
+}
+
+// bonus_items JSON shape stored in catalog_products
+interface BonusItem {
+  id: string;
+  name: string;
+  icon: string | null;
+  qty: number;
+}
+
+type ViewMode = "grid" | "table";
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function formatRupiah(n: number | null | undefined) {
+  if (!n) return "—";
+  return "Rp" + n.toLocaleString("id-ID");
+}
+
+function catalogStatusBadge(status: string) {
+  const map: Record<string, { label: string; class: string }> = {
+    draft:       { label: "Draft",     class: "bg-zinc-500 text-white" },
+    published:   { label: "AKTIF",    class: "bg-emerald-500 text-white" },
+    unpublished: { label: "Nonaktif",  class: "bg-zinc-400 text-white" },
+  };
+  const s = map[status] ?? map.draft;
+  return <span className={`inline-flex items-center justify-center text-xs font-semibold px-2.5 py-1 rounded-md ${s.class}`}>{s.label}</span>;
+}
+
+function StockBadge({ total, noMinus, minus }: { total: number; noMinus: number; minus: number }) {
+  if (total === 0) {
+    return <span className="text-sm font-semibold text-red-500">Stok Habis</span>;
+  }
+  return (
+    <div className="flex items-center gap-2 text-sm font-semibold">
+      <span className="text-emerald-600">{total} Unit Tersedia</span>
+      <span className="text-muted-foreground">·</span>
+      <span className="text-muted-foreground">{noMinus} Normal</span>
+      {minus > 0 && (
+        <>
+          <span className="text-muted-foreground">·</span>
+          <span className="text-amber-600">{minus} Minus</span>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ChannelBadge({ type }: { type: "pos" | "web" | "marketplace" }) {
+  const config = {
+    pos: { label: "POS", class: "bg-blue-50 text-blue-600 border-blue-200" },
+    web: { label: "Web", class: "bg-purple-50 text-purple-600 border-purple-200" },
+    marketplace: { label: "Marketplace", class: "bg-amber-50 text-amber-600 border-amber-200" },
+  };
+  const c = config[type];
+  const IconComponent = type === "pos" ? Store : type === "web" ? Globe : ShoppingCart;
+  return (
+    <span className={`inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-md border ${c.class}`}>
+      <IconComponent className="w-3.5 h-3.5" />
+      {c.label}
+    </span>
+  );
+}
+
+function PriceDisplay({ agg }: { agg?: StockAggregate }) {
+  if (!agg || agg.total === 0) return <span className="text-sm font-semibold text-red-500">Stok Habis</span>;
+  if (!agg.min_price) return <span className="text-sm text-muted-foreground">Harga belum ditetapkan</span>;
+  return (
+    <div className="flex items-baseline gap-2">
+      <span className="text-xs text-muted-foreground">Mulai</span>
+      <span className="text-lg font-bold text-foreground">{formatRupiah(agg.min_price)}</span>
+    </div>
+  );
+}
+
+function discountTypeLabel(type: string) {
+  const map: Record<string, string> = {
+    percentage: "Persentase (%)",
+    fixed_amount: "Potongan Tetap (Rp)",
+    buy_x_get_y: "Beli X Gratis Y",
+    min_purchase: "Min. Pembelian",
+  };
+  return map[type] ?? type;
+}
+
+// ── Image Upload helper ────────────────────────────────────────────────────────
+async function uploadImage(file: File, _path: string): Promise<string | null> {
+  try {
+    const { uploadFile } = await import("@/lib/upload");
+    const result = await uploadFile(file, "products");
+    return result.url;
+  } catch (err) {
+    console.error("Upload error:", err);
+    return null;
+  }
+}
+
+// ── ImageUploadBox ─────────────────────────────────────────────────────────────
+interface ImageUploadBoxProps {
+  label: string;
+  hint?: string;
+  value: string | null;
+  onChange: (url: string | null) => void;
+  aspect?: string; // tailwind aspect ratio class
+}
+function ImageUploadBox({ label, hint, value, onChange, aspect = "aspect-[4/3]" }: ImageUploadBoxProps) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+
+  async function handleFile(file: File) {
+    setUploading(true);
+    const path = `catalog/${Date.now()}-${file.name.replace(/\s+/g, "_")}`;
+    const url = await uploadImage(file, path);
+    setUploading(false);
+    if (url) onChange(url);
+  }
+
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault(); e.stopPropagation(); setDragOver(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file && file.type.startsWith("image/")) handleFile(file);
+  }
+  function handleDragOver(e: React.DragEvent) { e.preventDefault(); e.stopPropagation(); setDragOver(true); }
+  function handleDragLeave(e: React.DragEvent) { e.preventDefault(); e.stopPropagation(); setDragOver(false); }
+
+  return (
+    <div className="space-y-1">
+      {label && <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">{label}</p>}
+      {hint && <p className="text-[11px] text-muted-foreground">{hint}</p>}
+      <div
+        className={cn(
+          "relative border-2 border-dashed rounded-xl overflow-hidden bg-muted/30 flex items-center justify-center cursor-pointer hover:bg-muted/50 transition-colors",
+          aspect,
+          dragOver ? "border-foreground bg-accent/50" : "border-border"
+        )}
+        onClick={() => fileRef.current?.click()}
+        onDrop={handleDrop}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+      >
+        {value ? (
+          <>
+            <img src={value} alt="" className="absolute inset-0 w-full h-full object-cover" />
+            <button
+              type="button"
+              onClick={e => { e.stopPropagation(); onChange(null); }}
+              className="absolute top-1.5 right-1.5 w-6 h-6 bg-black/60 text-white rounded-full flex items-center justify-center hover:bg-black/80 transition"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </>
+        ) : (
+          <div className="flex flex-col items-center gap-1.5 text-muted-foreground/50 p-4 text-center">
+            {uploading ? (
+              <div className="w-5 h-5 border-2 border-muted-foreground/30 border-t-muted-foreground rounded-full animate-spin" />
+            ) : (
+              <>
+                <Camera className="w-6 h-6" />
+                <span className="text-[11px]">{dragOver ? "Lepas untuk upload" : "Klik atau seret gambar"}</span>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }}
+      />
+    </div>
+  );
+}
+
+// ── Main Page ─────────────────────────────────────────────────────────────────
+export default function KatalogPage() {
+  const { user, role } = useAuth();
+  const { toast } = useToast();
+  const navigate = useNavigate();
+  const isSuperAdmin = role === "super_admin";
+  const isWebAdmin = role === "web_admin";
+  const canManageKeys = isSuperAdmin || isWebAdmin;
+
+  const [catalogs, setCatalogs] = useState<CatalogProduct[]>([]);
+  const [masterProducts, setMasterProducts] = useState<MasterProduct[]>([]);
+  const [stockAgg, setStockAgg] = useState<StockAggregate[]>([]);
+  const [discountCodes, setDiscountCodes] = useState<DiscountCode[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const [viewMode, setViewMode] = useState<ViewMode>("grid");
+  const [search, setSearch] = useState("");
+  const [filterStatus, setFilterStatus] = useState("published"); // Default: aktif
+  const [filterCategory, setFilterCategory] = useState("iphone"); // Default: iPhone
+  const [filterStock, setFilterStock] = useState<"has_stock" | "out_of_stock" | "all">("has_stock");
+  const [filterWarranty, setFilterWarranty] = useState("all");
+  const [warrantyLabelsMap, setWarrantyLabelsMap] = useState<Record<string, string>>({});
+
+  // Branch selector
+  const [branches, setBranches] = useState<{ id: string; name: string; city: string | null }[]>([]);
+  const [selectedBranch, setSelectedBranch] = useState<string>("");
+
+  // Auto-generate state
+  const [genOpen, setGenOpen] = useState(false);
+  const [genLoading, setGenLoading] = useState(false);
+  const [genPreview, setGenPreview] = useState<{ display_name: string; variant_count: number; colors: string[] }[] | null>(null);
+  const [genResult, setGenResult] = useState<{ created: number; skipped: number; errors: string[]; created_names: string[] } | null>(null);
+  const [genStep, setGenStep] = useState<"preview" | "generating" | "done">("preview");
+
+  // ── Populate placeholder images ──
+  const [populatingImages, setPopulatingImages] = useState(false);
+  async function handlePopulateImages(overwrite = false) {
+    setPopulatingImages(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("populate-catalog-images", {
+        body: { overwrite },
+      });
+      if (error) throw error;
+      toast({ title: `✅ ${data.updated} katalog diperbarui fotonya`, description: `${data.skipped} sudah ada foto (dilewati)` });
+      fetchAll();
+    } catch (e: any) {
+      toast({ title: "Gagal mengisi foto", description: e.message, variant: "destructive" });
+    } finally {
+      setPopulatingImages(false);
+    }
+  }
+
+  async function handleGenPreview() {
+    setGenOpen(true);
+    setGenLoading(true);
+    setGenPreview(null);
+    setGenResult(null);
+    setGenStep("preview");
+    try {
+      const { data, error } = await supabase.functions.invoke("generate-catalog-bulk", {
+        body: { branch_id: selectedBranch },
+      });
+      if (error) throw error;
+      if (data.error) { toast({ title: data.error, variant: "destructive" }); setGenOpen(false); return; }
+      if (data.message && data.created === 0) {
+        toast({ title: data.message });
+        setGenOpen(false);
+        return;
+      }
+      if (data.items) {
+        setGenPreview(data.items.map((it: any) => ({
+          display_name: it.display_name,
+          catalog_warranty_type: it.catalog_warranty_type,
+          variant_count: it.colors.length,
+          colors: it.colors,
+          storages: it.storages,
+        })));
+      }
+    } catch (e: any) {
+      toast({ title: "Gagal memuat preview", description: e.message, variant: "destructive" });
+      setGenOpen(false);
+    } finally {
+      setGenLoading(false);
+    }
+  }
+
+  async function handleGenExecute() {
+    setGenStep("generating");
+    setGenLoading(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("generate-catalog-bulk", {
+        body: { branch_id: selectedBranch },
+      });
+      if (error) throw error;
+      if (data.error) { toast({ title: data.error, variant: "destructive" }); setGenStep("preview"); return; }
+      setGenResult({ created: data.created ?? 0, skipped: data.skipped ?? 0, errors: data.errors ?? [], created_names: data.created_names ?? [] });
+      setGenStep("done");
+      fetchAll();
+    } catch (e: any) {
+      toast({ title: "Gagal generate katalog", description: e.message, variant: "destructive" });
+      setGenStep("preview");
+    } finally {
+      setGenLoading(false);
+    }
+  }
+
+  // ── Fetch branches first (independent) ─────────────────────────────────────
+  useEffect(() => {
+    async function loadBranches() {
+      const { data } = await db.from("branches").select("id, name, city").eq("is_active", true).order("name");
+      const list = data ?? [];
+      setBranches(list);
+      if (!selectedBranch && list.length > 0) {
+        setSelectedBranch(list[0].id);
+      }
+    }
+    loadBranches();
+  }, []);
+
+  // ── Fetch data ─────────────────────────────────────────────────────────────
+  const fetchAll = useCallback(async () => {
+    setLoading(true);
+    try {
+      // Optimized: Only fetch needed columns and filter immediately
+      const [catRes, masterRes, stockRes, discRes, warrantyRes] = await Promise.all([
+        db.from("catalog_products").select(`
+          id, product_id, slug, display_name, short_description, catalog_status,
+          publish_to_pos, publish_to_web, publish_to_marketplace,
+          highlight_product, show_condition_breakdown, promo_label,
+          thumbnail_url, gallery_urls, updated_at, catalog_series, catalog_warranty_type
+        `)
+          .eq("catalog_status", "published") // Only published by default
+          .order("display_name"),
+        db.from("master_products").select("id, series, warranty_type, category, storage_gb, color, is_active")
+          .eq("is_active", true).is("deleted_at", null)
+          .order("series"),
+        db.from("stock_units").select("product_id, selling_price, condition_status")
+          .eq("stock_status", "available")
+          .eq("branch_id", selectedBranch),
+        db.from("discount_codes").select("id, code, name, discount_type, discount_percent, discount_amount, is_active, valid_until")
+          .order("created_at", { ascending: false }),
+        db.from("warranty_labels").select("key, label").eq("is_active", true).order("sort_order"),
+      ]);
+
+      const wMap: Record<string, string> = {};
+      for (const w of (warrantyRes.data ?? [])) wMap[w.key] = w.label;
+      setWarrantyLabelsMap(wMap);
+
+      const masters: MasterProduct[] = masterRes.data ?? [];
+      const rawCatalogs: CatalogProduct[] = catRes.data ?? [];
+      const rawStock = stockRes.data ?? [];
+
+      // Aggregate stock per product (AVAILABLE units only)
+      const aggMap: Record<string, StockAggregate> = {};
+      const priceByProd: Record<string, number[]> = {};
+
+      for (const unit of rawStock) {
+        if (!aggMap[unit.product_id]) {
+          aggMap[unit.product_id] = {
+            product_id: unit.product_id, total: 0,
+            no_minus: 0, minus: 0,
+            min_price: null, avg_price: null, max_price: null,
+          };
+        }
+        const a = aggMap[unit.product_id];
+        a.total++;
+        if (unit.condition_status === "no_minus") a.no_minus++; else a.minus++;
+        const p = Number(unit.selling_price);
+        if (p > 0) {
+          a.min_price = a.min_price === null ? p : Math.min(a.min_price, p);
+          a.max_price = a.max_price === null ? p : Math.max(a.max_price, p);
+          priceByProd[unit.product_id] = [...(priceByProd[unit.product_id] ?? []), p];
+        }
+      }
+      for (const pid in priceByProd) {
+        const arr = priceByProd[pid];
+        if (aggMap[pid]) aggMap[pid].avg_price = Math.round(arr.reduce((a, b) => a + b, 0) / arr.length);
+      }
+
+      setStockAgg(Object.values(aggMap));
+
+      const masterMap: Record<string, MasterProduct> = {};
+      masters.forEach(m => (masterMap[m.id] = m));
+      
+      setCatalogs(rawCatalogs.map(c => {
+        const master = c.product_id ? masterMap[c.product_id] : undefined;
+        return { ...c, master };
+      }));
+      setMasterProducts(masters);
+      setDiscountCodes(discRes.data ?? []);
+    } finally {
+      setLoading(false);
+    }
+  }, [selectedBranch]);
+
+  useEffect(() => { fetchAll(); }, [fetchAll]);
+
+  // Get aggregate for a catalog item — sum across all matching master products by series + warranty_group
+  const getAgg = (cat: CatalogProduct) => {
+    const series = (cat as any).catalog_series ?? cat.master?.series;
+    const wGroup = (cat as any).catalog_warranty_type;
+
+    if (!series || !wGroup) {
+      return cat.product_id ? stockAgg.find(a => a.product_id === cat.product_id) : undefined;
+    }
+
+    // Find all master products matching this series + warranty group
+    const matchingWTypes: string[] = [];
+    if (wGroup === "RESMI BEACUKAI") matchingWTypes.push("resmi_bc");
+    else if (wGroup === "RESMI INDONESIA") matchingWTypes.push("digimap", "ibox", "resmi");
+    else if (wGroup === "INTER") matchingWTypes.push("inter");
+    else if (wGroup === "WHITELIST") matchingWTypes.push("whitelist");
+
+    const matchingMasters = masterProducts.filter(m =>
+      m.series === series && (matchingWTypes.length === 0 || matchingWTypes.includes(m.warranty_type))
+    );
+
+    const combined: StockAggregate = { product_id: "", total: 0, no_minus: 0, minus: 0, min_price: null, avg_price: null, max_price: null };
+    for (const m of matchingMasters) {
+      const a = stockAgg.find(s => s.product_id === m.id);
+      if (!a) continue;
+      combined.total += a.total;
+      combined.no_minus += a.no_minus;
+      combined.minus += a.minus;
+      if (a.min_price != null) combined.min_price = combined.min_price === null ? a.min_price : Math.min(combined.min_price, a.min_price);
+      if (a.max_price != null) combined.max_price = combined.max_price === null ? a.max_price : Math.max(combined.max_price, a.max_price);
+    }
+    return combined;
+  };
+
+  // ── Filtering ───────────────────────────────────────────────────────────────
+  const filtered = catalogs.filter(c => {
+    const q = search.toLowerCase();
+    const matchSearch = !q ||
+      c.display_name.toLowerCase().includes(q) ||
+      c.master?.series.toLowerCase().includes(q) ||
+      c.master?.color.toLowerCase().includes(q);
+    const matchStatus = filterStatus === "all" || c.catalog_status === filterStatus;
+    const matchCategory = filterCategory === "all" || c.master?.category === filterCategory;
+    const matchWarranty = filterWarranty === "all" ||
+      (filterWarranty === "beacukai" && ((c as any).catalog_warranty_type === "RESMI BEACUKAI")) ||
+      (filterWarranty === "indonesia" && ((c as any).catalog_warranty_type === "RESMI INDONESIA"));
+    const matchStock = filterStock === "all" ||
+      (filterStock === "has_stock" && (getAgg(c)?.total ?? 0) > 0) ||
+      (filterStock === "out_of_stock" && (getAgg(c)?.total ?? 0) === 0);
+    return matchSearch && matchStatus && matchCategory && matchWarranty && matchStock;
+  });
+
+  // Products not yet in catalog — group by series + warranty_group
+  function getCatalogGroupKey(cat: CatalogProduct): string {
+    const series = cat.master?.series ?? (cat as any).catalog_series ?? "";
+    const wType = (cat as any).catalog_warranty_type ?? cat.master?.warranty_type ?? "";
+    return `${series}||${wType}`;
+  }
+  const catalogKeys = new Set(catalogs.map(c => getCatalogGroupKey(c)));
+  const availableToAdd = masterProducts.filter(m => {
+    const wGroup = getWarrantyGroup(m.warranty_type);
+    return !catalogKeys.has(`${m.series}||${wGroup}`);
+  });
+
+  // Helper: get warranty group label
+  function getWarrantyGroup(wt: string | null): string {
+    if (wt === "resmi_bc") return "RESMI BEACUKAI";
+    if (wt === "digimap" || wt === "ibox" || wt === "resmi") return "RESMI INDONESIA";
+    if (wt === "inter") return "INTER";
+    if (wt === "whitelist") return "WHITELIST";
+    return "LAINNYA";
+  }
+
+  // ── Toggle publish ──────────────────────────────────────────────────────────
+  async function toggleStatus(cat: CatalogProduct) {
+    const newStatus = cat.catalog_status === "published" ? "unpublished" : "published";
+    const { error } = await db.from("catalog_products").update({ catalog_status: newStatus }).eq("id", cat.id);
+    if (error) { toast({ title: "Gagal mengubah status", variant: "destructive" }); return; }
+    await logActivity({
+      action: newStatus === "published" ? "publish_catalog" : "unpublish_catalog",
+      actor_id: user?.id, actor_email: user?.email, actor_role: role,
+      target_id: cat.product_id,
+      metadata: { display_name: cat.display_name, status: newStatus },
+    });
+    toast({ title: newStatus === "published" ? "Produk diaktifkan di katalog" : "Produk dinonaktifkan dari katalog" });
+    fetchAll();
+  }
+
+  // ── Delete ─────────────────────────────────────────────────────────────────
+  async function deleteCatalog(cat: CatalogProduct) {
+    if (!confirm(`Hapus "${cat.display_name}" dari katalog?`)) return;
+    const { error } = await db.from("catalog_products").delete().eq("id", cat.id);
+    if (error) { toast({ title: "Gagal menghapus", variant: "destructive" }); return; }
+    await logActivity({
+      action: "delete_catalog",
+      actor_id: user?.id, actor_email: user?.email, actor_role: role,
+      target_id: cat.product_id, metadata: { display_name: cat.display_name },
+    });
+    toast({ title: "Produk dihapus dari katalog" });
+    fetchAll();
+  }
+
+  // ── Bulk activation ────────────────────────────────────────────────────────
+  const [bulkLoading, setBulkLoading] = useState(false);
+  const [bulkDialogOpen, setBulkDialogOpen] = useState(false);
+  const [bulkAction, setBulkAction] = useState<"publish" | "unpublish">("publish");
+  const [bulkScope, setBulkScope] = useState<"all" | "category" | "draft" | "selected">("all");
+  const [bulkCategory, setBulkCategory] = useState<string>("iphone");
+  const [bulkSelected, setBulkSelected] = useState<Set<string>>(new Set());
+  const [selectMode, setSelectMode] = useState(false);
+
+  // Get unique categories from catalogs
+  const catalogCategories = [...new Set(catalogs.map(c => c.master?.category).filter(Boolean))] as string[];
+
+  function openBulkDialog(action: "publish" | "unpublish", scope: "all" | "category" | "draft" | "selected", category?: string) {
+    setBulkAction(action);
+    setBulkScope(scope);
+    if (category) setBulkCategory(category);
+    setBulkDialogOpen(true);
+  }
+
+  function getBulkTargets() {
+    return catalogs.filter(c => {
+      const targetStatus = bulkAction === "publish" ? ["draft", "unpublished"] : ["published"];
+      if (!targetStatus.includes(c.catalog_status)) return false;
+      if (bulkScope === "category") return c.master?.category === bulkCategory;
+      if (bulkScope === "draft") return c.catalog_status === "draft";
+      if (bulkScope === "selected") return bulkSelected.has(c.id);
+      return true; // "all"
+    });
+  }
+
+  async function executeBulk() {
+    const targets = getBulkTargets();
+    if (targets.length === 0) { toast({ title: "Tidak ada produk yang sesuai." }); return; }
+    setBulkLoading(true);
+    const newStatus = bulkAction === "publish" ? "published" : "unpublished";
+    const ids = targets.map(t => t.id);
+    const { error } = await db.from("catalog_products").update({ catalog_status: newStatus }).in("id", ids);
+    if (error) {
+      toast({ title: "Gagal mengubah status massal", variant: "destructive" });
+    } else {
+      await logActivity({
+        action: `bulk_${bulkAction}_catalog`,
+        actor_id: user?.id, actor_email: user?.email, actor_role: role,
+        metadata: { count: targets.length, scope: bulkScope, category: bulkScope === "category" ? bulkCategory : undefined },
+      });
+      toast({ title: `${targets.length} produk berhasil di${bulkAction === "publish" ? "aktifkan" : "nonaktifkan"}.` });
+      fetchAll();
+    }
+    setBulkLoading(false);
+    setBulkDialogOpen(false);
+    setBulkSelected(new Set());
+    setSelectMode(false);
+  }
+
+  function toggleSelect(id: string) {
+    setBulkSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    if (bulkSelected.size === filtered.length) {
+      setBulkSelected(new Set());
+    } else {
+      setBulkSelected(new Set(filtered.map(c => c.id)));
+    }
+  }
+
+  // ── Summary stats ───────────────────────────────────────────────────────────
+  // Total SKU = all active master products
+  // Aktif = master products that are part of a catalog
+  const catalogMasterIds = new Set<string>();
+  catalogs.forEach(c => {
+    const series = (c as any).catalog_series ?? c.master?.series;
+    const wGroup = (c as any).catalog_warranty_type;
+    if (!series || !wGroup) return;
+    const matchingWTypes: string[] = [];
+    if (wGroup === "RESMI BEACUKAI") matchingWTypes.push("resmi_bc");
+    else if (wGroup === "RESMI INDONESIA") matchingWTypes.push("digimap", "ibox", "resmi");
+    else if (wGroup === "INTER") matchingWTypes.push("inter");
+    else if (wGroup === "WHITELIST") matchingWTypes.push("whitelist");
+    masterProducts.filter(m => m.series === series && (matchingWTypes.length === 0 || matchingWTypes.includes(m.warranty_type))).forEach(m => catalogMasterIds.add(m.id));
+  });
+  const stats = {
+    totalSku: masterProducts.length,
+    skuInCatalog: catalogMasterIds.size,
+    draft: catalogs.filter(c => c.catalog_status === "draft").length,
+    outOfStock: catalogs.filter(c => (getAgg(c)?.total ?? 0) === 0).length,
+  };
+
+  return (
+    <DashboardLayout pageTitle="Katalog Produk">
+      <div className="space-y-5">
+        {/* Header */}
+        <div className="flex items-start justify-between flex-wrap gap-3">
+          <div>
+            <h2 className="text-xl font-bold text-foreground">Katalog Produk</h2>
+            <p className="text-sm font-medium text-muted-foreground">
+              Kelola tampilan produk untuk kebutuhan penjualan dan distribusi.
+            </p>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Branch selector */}
+            <SearchableDropdown
+              options={branches.map(b => ({ id: b.id, name: b.city ? `${b.name} — ${b.city}` : b.name }))}
+              value={selectedBranch || null}
+              onChange={setSelectedBranch}
+              placeholder="Pilih Cabang"
+              searchPlaceholder="Cari cabang..."
+              align="right"
+            />
+
+            {isSuperAdmin && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" className="flex items-center gap-2">
+                    <Zap className="w-4 h-4" /> Aksi <ChevronDown className="w-3 h-3" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56">
+                  <DropdownMenuItem onClick={handleGenPreview}>
+                    <Sparkles className="w-4 h-4 mr-2" /> Auto Generate iPhone
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => navigate("/admin/katalog/ekspedisi")}>
+                    <Package className="w-4 h-4 mr-2" /> Kelola Ekspedisi
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => navigate("/admin/katalog/bonus")}>
+                    <Gift className="w-4 h-4 mr-2" /> Kelola Bonus
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => handlePopulateImages(false)} disabled={populatingImages}>
+                    <Camera className="w-4 h-4 mr-2" /> {populatingImages ? "Mengisi foto…" : "Isi Foto Placeholder"}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handlePopulateImages(true)} disabled={populatingImages}>
+                    <RefreshCw className="w-4 h-4 mr-2" /> Timpa Semua Foto
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => openBulkDialog("publish", "all")}>
+                    <Power className="w-4 h-4 mr-2" /> Aktifkan Semua
+                  </DropdownMenuItem>
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger>
+                      <Power className="w-4 h-4 mr-2" /> Aktifkan per Kategori
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent>
+                      {catalogCategories.map(cat => (
+                        <DropdownMenuItem key={cat} onClick={() => openBulkDialog("publish", "category", cat)}>
+                          {CATEGORY_LABELS[cat as ProductCategory] ?? cat}
+                        </DropdownMenuItem>
+                      ))}
+                      {catalogCategories.length === 0 && <DropdownMenuItem disabled>Belum ada katalog</DropdownMenuItem>}
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                  <DropdownMenuItem onClick={() => openBulkDialog("publish", "draft")}>
+                    <Archive className="w-4 h-4 mr-2" /> Aktifkan Semua Draft
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => { setSelectMode(true); setBulkSelected(new Set()); }}>
+                    <Check className="w-4 h-4 mr-2" /> Pilih Manual…
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={() => openBulkDialog("unpublish", "all")} className="text-destructive">
+                    <PowerOff className="w-4 h-4 mr-2" /> Nonaktifkan Semua
+                  </DropdownMenuItem>
+                  <DropdownMenuSub>
+                    <DropdownMenuSubTrigger className="text-destructive">
+                      <PowerOff className="w-4 h-4 mr-2" /> Nonaktifkan per Kategori
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuSubContent>
+                      {catalogCategories.map(cat => (
+                        <DropdownMenuItem key={cat} onClick={() => openBulkDialog("unpublish", "category", cat)}>
+                          {CATEGORY_LABELS[cat as ProductCategory] ?? cat}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuSubContent>
+                  </DropdownMenuSub>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
+
+            {isSuperAdmin && (
+              <Button size="sm" onClick={() => navigate(`/admin/katalog/tambah?branch=${selectedBranch}`)} className="flex items-center gap-2">
+                <Plus className="w-4 h-4" /> <span className="hidden sm:inline">Tambah ke Katalog</span>
+              </Button>
+            )}
+          </div>
+        </div>
+        {/* Stats + Filters — sticky block */}
+        <div className="sticky top-16 z-20 bg-background py-3 -mx-4 md:-mx-6 px-4 md:px-6 border-b border-border space-y-3">
+
+        {/* Stats */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {[
+             { label: "Total SKU Tersedia", value: stats.totalSku, icon: BookOpen },
+             { label: "SKU di Katalog", value: stats.skuInCatalog, icon: Globe },
+             { label: "Draft", value: stats.draft, icon: Archive },
+             { label: "Stok Habis", value: stats.outOfStock, icon: AlertCircle },
+          ].map(s => (
+            <div key={s.label} className="bg-card border border-border rounded-xl p-4 flex items-center gap-3">
+              <div className="w-9 h-9 rounded-lg bg-foreground/5 flex items-center justify-center shrink-0">
+                <s.icon className="w-4 h-4 text-muted-foreground" />
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">{s.label}</p>
+                <p className="text-xl font-bold text-foreground">{s.value}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Filters + View toggle */}
+        <div className="flex flex-col lg:flex-row gap-3 flex-wrap">
+          <div className="relative flex-1 min-w-[200px] max-w-sm">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Input value={search} onChange={e => setSearch(e.target.value)}
+              placeholder="Cari seri atau varian produk…" className="pl-9" />
+          </div>
+          <Select value={filterWarranty} onValueChange={setFilterWarranty}>
+            <SelectTrigger className="w-full sm:w-44">
+              <SelectValue placeholder="Tipe Garansi" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Semua Garansi</SelectItem>
+              <SelectItem value="beacukai">Resmi Beacukai</SelectItem>
+              <SelectItem value="indonesia">Resmi Indonesia</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={filterStock} onValueChange={v => setFilterStock(v as "has_stock" | "out_of_stock" | "all")}>
+            <SelectTrigger className="w-full sm:w-36">
+              <SelectValue placeholder="Stok" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Semua</SelectItem>
+              <SelectItem value="has_stock">Ada Stok</SelectItem>
+              <SelectItem value="out_of_stock">Stok Habis</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={filterStatus} onValueChange={setFilterStatus}>
+            <SelectTrigger className="w-full sm:w-36">
+              <SelectValue placeholder="Status" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Semua</SelectItem>
+              <SelectItem value="published">Aktif</SelectItem>
+              <SelectItem value="draft">Draft</SelectItem>
+              <SelectItem value="unpublished">Nonaktif</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={filterCategory} onValueChange={setFilterCategory}>
+            <SelectTrigger className="w-full sm:w-36">
+              <SelectValue placeholder="Kategori" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Semua</SelectItem>
+              <SelectItem value="iphone">iPhone</SelectItem>
+              <SelectItem value="ipad">iPad</SelectItem>
+              <SelectItem value="watch">Apple Watch</SelectItem>
+              <SelectItem value="airpods">AirPods</SelectItem>
+              <SelectItem value="macbook">MacBook</SelectItem>
+              <SelectItem value="accessory">Aksesori</SelectItem>
+            </SelectContent>
+          </Select>
+          <div className="flex border border-border rounded-lg overflow-hidden shrink-0">
+            <button onClick={() => setViewMode("grid")}
+              className={cn("px-3 py-2 transition-colors", viewMode === "grid" ? "bg-foreground text-background" : "hover:bg-accent text-muted-foreground")}>
+              <LayoutGrid className="w-4 h-4" />
+            </button>
+            <button onClick={() => setViewMode("table")}
+              className={cn("px-3 py-2 transition-colors", viewMode === "table" ? "bg-foreground text-background" : "hover:bg-accent text-muted-foreground")}>
+              <List className="w-4 h-4" />
+            </button>
+          </div>
+          <Button variant="outline" size="icon" onClick={fetchAll} disabled={loading}>
+            <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
+          </Button>
+        </div>
+        </div>{/* end sticky block */}
+
+        {/* Empty state */}
+        {!loading && filtered.length === 0 && (
+          <div className="bg-card border border-border rounded-2xl py-20 flex flex-col items-center gap-4 text-center px-6">
+            <div className="w-14 h-14 rounded-2xl bg-muted flex items-center justify-center">
+              <BookOpen className="w-7 h-7 text-muted-foreground" />
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-foreground">
+                {catalogs.length === 0 ? "Belum ada produk yang ditampilkan dalam katalog." : "Tidak ada produk yang sesuai dengan filter yang dipilih."}
+              </p>
+              <p className="text-xs text-muted-foreground mt-1">
+                {catalogs.length === 0 && isSuperAdmin ? "Klik \"Tambah ke Katalog\" untuk memulai." : "Coba ubah filter pencarian."}
+              </p>
+            </div>
+            {catalogs.length === 0 && isSuperAdmin && (
+              <Button onClick={() => navigate(`/admin/katalog/tambah?branch=${selectedBranch}`)} className="flex items-center gap-2">
+                <Plus className="w-4 h-4" /> Tambahkan Produk ke Katalog
+              </Button>
+            )}
+          </div>
+        )}
+
+        {/* Skeleton */}
+        {loading && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            {[...Array(8)].map((_, i) => (
+              <div key={i} className="bg-card border border-border rounded-2xl overflow-hidden animate-pulse">
+                <div className="aspect-[4/3] bg-muted" />
+                <div className="p-4 space-y-2">
+                  <div className="h-4 bg-muted rounded w-3/4" />
+                  <div className="h-3 bg-muted rounded w-1/2" />
+                  <div className="h-5 bg-muted rounded w-2/3" />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Grid View */}
+        {/* Select mode bar */}
+        {selectMode && (
+          <div className="flex items-center gap-3 bg-primary/5 border border-primary/20 rounded-xl px-4 py-3">
+            <Checkbox checked={bulkSelected.size === filtered.length && filtered.length > 0} onCheckedChange={toggleSelectAll} />
+            <span className="text-sm font-medium text-foreground">{bulkSelected.size} dipilih</span>
+            <div className="flex-1" />
+            <Button size="sm" disabled={bulkSelected.size === 0} onClick={() => openBulkDialog("publish", "selected")}>
+              <Power className="w-4 h-4 mr-1" /> Aktifkan
+            </Button>
+            <Button size="sm" variant="outline" disabled={bulkSelected.size === 0} onClick={() => openBulkDialog("unpublish", "selected")}>
+              <PowerOff className="w-4 h-4 mr-1" /> Nonaktifkan
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => { setSelectMode(false); setBulkSelected(new Set()); }}>
+              <X className="w-4 h-4" />
+            </Button>
+          </div>
+        )}
+
+        {!loading && viewMode === "grid" && filtered.length > 0 && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            {filtered.map(cat => {
+               const agg = getAgg(cat);
+              const outOfStock = (agg?.total ?? 0) === 0;
+              return (
+                <div
+                  key={cat.id}
+                  onDoubleClick={() => (isSuperAdmin || role === "admin_branch") && navigate(`/admin/katalog/edit/${cat.id}`)}
+                  className={cn("bg-card border rounded-2xl overflow-hidden hover:shadow-md transition-shadow group flex flex-col cursor-pointer", selectMode && bulkSelected.has(cat.id) ? "border-primary ring-2 ring-primary/20" : "border-border")}
+                >
+                  {/* Thumbnail — 4:3 */}
+                  <div className="relative aspect-[4/3] flex items-center justify-center overflow-hidden">
+                    {selectMode && (
+                      <div className="absolute top-2 left-2 z-10" onClick={e => e.stopPropagation()}>
+                        <Checkbox checked={bulkSelected.has(cat.id)} onCheckedChange={() => toggleSelect(cat.id)} className="bg-background/80 backdrop-blur-sm" />
+                      </div>
+                    )}
+                    {cat.thumbnail_url ? (
+                      <img src={cat.thumbnail_url} alt={cat.display_name}
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+                    ) : (
+                      <CategoryImagePlaceholder category={cat.master?.category} />
+                    )}
+                    {/* Badges */}
+                    <div className="absolute top-2 left-2 flex flex-col gap-1.5 items-start">
+                      {catalogStatusBadge(cat.catalog_status)}
+                      {cat.highlight_product && (
+                        <span className="inline-flex items-center justify-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-md bg-amber-500 text-white shadow-sm whitespace-nowrap">
+                          <Star className="w-3 h-3 fill-current shrink-0" /> Unggulan
+                        </span>
+                      )}
+                      {cat.promo_label && (
+                        <span className="inline-flex items-center justify-center gap-1 text-xs font-semibold px-2.5 py-1 rounded-md bg-rose-600 text-white shadow-sm whitespace-nowrap">
+                          <Tag className="w-3 h-3 shrink-0" /> {cat.promo_label}
+                        </span>
+                      )}
+                    </div>
+                    {outOfStock && (
+                      <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                        <span className="text-white text-sm font-semibold bg-black/70 px-4 py-1.5 rounded-full">Stok Habis</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Info */}
+                  <div className="p-4 flex-1 flex flex-col gap-2">
+                    {(isSuperAdmin || role === "admin_branch") && (
+                      <p className="text-[10px] text-muted-foreground/40 text-right">Klik 2x untuk edit</p>
+                    )}
+                    <div>
+                      <p className="font-bold text-base leading-tight line-clamp-2">{cat.display_name}</p>
+                    </div>
+                    <div className="mt-auto space-y-2">
+                      <PriceDisplay agg={agg} />
+                      {!outOfStock && agg && (
+                        <StockBadge total={agg.total} noMinus={agg.no_minus} minus={agg.minus} />
+                      )}
+                      <div className="flex gap-1.5 flex-wrap">
+                        {cat.publish_to_pos && <ChannelBadge type="pos" />}
+                        {cat.publish_to_web && <ChannelBadge type="web" />}
+                        {cat.publish_to_marketplace && <ChannelBadge type="marketplace" />}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Actions */}
+                  <div className="border-t border-border px-4 py-2.5 flex items-center gap-2">
+                    {cat.slug && cat.catalog_status === "published" && (
+                      <button onClick={() => window.open(`/produk/${cat.slug}`, "_blank")}
+                        className="flex-1 flex items-center justify-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors py-1">
+                        <Eye className="w-3.5 h-3.5" /> Lihat
+                      </button>
+                    )}
+                    {(isSuperAdmin || role === "admin_branch") && (
+                       <button onClick={() => navigate(`/admin/katalog/edit/${cat.id}`)}
+                        className="flex-1 flex items-center justify-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors py-1">
+                        <Edit3 className="w-3.5 h-3.5" /> Edit
+                      </button>
+                    )}
+                    {isSuperAdmin && (
+                      <button onClick={() => toggleStatus(cat)}
+                        className="flex-1 flex items-center justify-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors py-1">
+                        {cat.catalog_status === "published" ? <Archive className="w-3.5 h-3.5" /> : <Globe className="w-3.5 h-3.5" />}
+                        {cat.catalog_status === "published" ? "Nonaktifkan" : "Aktifkan"}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Table View */}
+        {!loading && viewMode === "table" && filtered.length > 0 && (
+          <div className="bg-card border border-border rounded-2xl overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-muted border-b border-border">
+                  <tr>
+                    <th className="text-left px-4 py-3 text-xs font-bold text-muted-foreground uppercase tracking-wider">Produk</th>
+                    <th className="text-left px-4 py-3 text-xs font-bold text-muted-foreground uppercase tracking-wider hidden sm:table-cell">Harga</th>
+                    <th className="text-left px-4 py-3 text-xs font-bold text-muted-foreground uppercase tracking-wider hidden md:table-cell">Stok</th>
+                    <th className="text-left px-4 py-3 text-xs font-bold text-muted-foreground uppercase tracking-wider">Status</th>
+                    <th className="text-left px-4 py-3 text-xs font-bold text-muted-foreground uppercase tracking-wider hidden lg:table-cell">Kanal</th>
+                    <th className="text-right px-4 py-3 text-xs font-bold text-muted-foreground uppercase tracking-wider">Aksi</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map(cat => {
+                    const agg = getAgg(cat);
+                    const outOfStock = (agg?.total ?? 0) === 0;
+                    return (
+                      <tr key={cat.id} className="border-b border-border last:border-0 hover:bg-accent/30 transition-colors">
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-3">
+                            {cat.thumbnail_url ? (
+                              <div className="w-10 h-10 rounded-lg shrink-0 overflow-hidden">
+                                <img src={cat.thumbnail_url} alt="" className="w-full h-full object-cover" />
+                              </div>
+                            ) : (
+                              <CategoryImagePlaceholder
+                                category={cat.master?.category}
+                                className="w-10 h-10 rounded-lg shrink-0"
+                                iconClassName="w-5 h-5"
+                              />
+                            )}
+                            <div>
+                              <p className="text-xs font-semibold text-foreground">{cat.display_name}</p>
+                            {cat.master && (
+                                <p className="text-[10px] text-muted-foreground capitalize">{cat.master.category} · {warrantyLabelsMap[cat.master.warranty_type] ?? cat.master.warranty_type}</p>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 hidden sm:table-cell">
+                          <PriceDisplay agg={agg} />
+                        </td>
+                        <td className="px-4 py-3 hidden md:table-cell">
+                          {outOfStock
+                            ? <span className="text-xs text-[hsl(var(--status-lost-fg))]">Stok Habis</span>
+                            : <span className="text-xs text-foreground font-medium">{agg?.total} unit</span>
+                          }
+                        </td>
+                        <td className="px-4 py-3">{catalogStatusBadge(cat.catalog_status)}</td>
+                        <td className="px-4 py-3 hidden lg:table-cell">
+                          <div className="flex gap-1">
+                            {cat.publish_to_pos && <Badge variant="outline" className="text-[10px] py-0 h-5"><Store className="w-2.5 h-2.5 mr-0.5" />POS</Badge>}
+                            {cat.publish_to_web && <Badge variant="outline" className="text-[10px] py-0 h-5"><Globe className="w-2.5 h-2.5 mr-0.5" />Web</Badge>}
+                            {cat.publish_to_marketplace && <Badge variant="outline" className="text-[10px] py-0 h-5"><ShoppingCart className="w-2.5 h-2.5 mr-0.5" />MKT</Badge>}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <div className="flex items-center justify-end gap-1">
+                            {cat.slug && cat.catalog_status === "published" && (
+                              <button onClick={() => window.open(`/produk/${cat.slug}`, "_blank")} className="p-1.5 rounded-lg hover:bg-accent transition-colors text-muted-foreground hover:text-foreground">
+                                <Eye className="w-4 h-4" />
+                              </button>
+                            )}
+                            {(isSuperAdmin || role === "admin_branch") && (
+                              <button onClick={() => navigate(`/admin/katalog/edit/${cat.id}`)} className="p-1.5 rounded-lg hover:bg-accent transition-colors text-muted-foreground hover:text-foreground">
+                                <Edit3 className="w-4 h-4" />
+                              </button>
+                            )}
+                            {isSuperAdmin && (
+                              <button onClick={() => toggleStatus(cat)} className="p-1.5 rounded-lg hover:bg-accent transition-colors text-muted-foreground hover:text-foreground">
+                                {cat.catalog_status === "published" ? <Archive className="w-4 h-4" /> : <Globe className="w-4 h-4" />}
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        <p className="text-xs text-muted-foreground text-center pb-2">
+          {filtered.length} dari {catalogs.length} entri katalog
+        </p>
+      </div>
+
+        {/* Auto Generate Catalog Modal */}
+        <Dialog open={genOpen} onOpenChange={setGenOpen}>
+          <DialogContent className="max-w-xl max-h-[85vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Sparkles className="w-5 h-5 text-primary" />
+                Auto Generate Katalog iPhone
+              </DialogTitle>
+            </DialogHeader>
+
+            {genStep === "preview" && genLoading && (
+              <div className="flex flex-col items-center gap-3 py-10">
+                <Loader2 className="w-8 h-8 animate-spin text-primary" />
+                <p className="text-sm text-muted-foreground">Menganalisis SKU iPhone...</p>
+              </div>
+            )}
+
+            {genStep === "preview" && !genLoading && genPreview && (
+              <div className="space-y-4">
+                <div className="bg-primary/5 border border-primary/20 rounded-xl p-4">
+                  <p className="text-sm font-semibold text-foreground">{genPreview.length} katalog baru akan dibuat</p>
+                  <p className="text-xs text-muted-foreground mt-1">Setiap katalog akan otomatis mendapat deskripsi AI berdasarkan spesifikasi produk.</p>
+                </div>
+                <div className="space-y-2 max-h-60 overflow-y-auto">
+                  {genPreview.map((p, i) => (
+                    <div key={i} className="flex items-center justify-between px-3 py-2 bg-card border border-border rounded-lg">
+                      <div>
+                        <p className="text-sm font-medium text-foreground">{p.display_name}</p>
+                        <p className="text-xs text-muted-foreground">{p.variant_count} warna: {p.colors.join(", ")}</p>
+                      </div>
+                      <Badge variant="secondary" className="text-[10px]">Baru</Badge>
+                    </div>
+                  ))}
+                </div>
+                <DialogFooter>
+                  <Button variant="outline" onClick={() => setGenOpen(false)}>Batal</Button>
+                  <Button onClick={handleGenExecute} className="flex items-center gap-2">
+                    <Sparkles className="w-4 h-4" /> Generate {genPreview.length} Katalog
+                  </Button>
+                </DialogFooter>
+              </div>
+            )}
+
+            {genStep === "generating" && (
+              <div className="flex flex-col items-center gap-3 py-10">
+                <Loader2 className="w-8 h-8 animate-spin text-primary" />
+                <p className="text-sm font-medium text-foreground">Membuat katalog dengan AI...</p>
+                <p className="text-xs text-muted-foreground">AI sedang menulis deskripsi untuk setiap produk.</p>
+              </div>
+            )}
+
+            {genStep === "done" && (
+              <div className="space-y-4">
+                {genResult && (
+                  <div className="bg-primary/5 border border-primary/20 rounded-xl p-4 flex items-center gap-3">
+                    <Check className="w-6 h-6 text-primary shrink-0" />
+                    <div>
+                      <p className="text-sm font-semibold text-foreground">{genResult.created} katalog berhasil dibuat!</p>
+                      {genResult.skipped > 0 && <p className="text-xs text-muted-foreground">{genResult.skipped} SKU sudah ada (di-skip).</p>}
+                    </div>
+                  </div>
+                )}
+
+                {genResult?.created_names?.length > 0 && (
+                  <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                    {genResult.created_names.map((name: string, i: number) => (
+                      <div key={i} className="flex items-center gap-2 px-3 py-1.5 bg-card border border-border rounded-lg text-sm">
+                        <Check className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                        {name}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {genResult?.errors?.length > 0 && (
+                  <div className="bg-destructive/10 border border-destructive/20 rounded-xl p-3 space-y-1">
+                    <p className="text-xs font-semibold text-destructive">Beberapa error:</p>
+                    {genResult.errors.map((e: string, i: number) => (
+                      <p key={i} className="text-xs text-destructive/80">{e}</p>
+                    ))}
+                  </div>
+                )}
+                <DialogFooter>
+                  <Button onClick={() => setGenOpen(false)}>Tutup</Button>
+                </DialogFooter>
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
+
+        {/* Bulk Action Confirmation Dialog */}
+        <Dialog open={bulkDialogOpen} onOpenChange={setBulkDialogOpen}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>
+                {bulkAction === "publish" ? "Aktifkan" : "Nonaktifkan"} Katalog Massal
+              </DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 py-2">
+              <div className="bg-muted/50 rounded-xl p-4 space-y-2">
+                <div className="flex items-center gap-2 text-sm">
+                  {bulkAction === "publish" ? <Power className="w-4 h-4 text-primary" /> : <PowerOff className="w-4 h-4 text-destructive" />}
+                  <span className="font-medium text-foreground">
+                    {bulkScope === "all" && "Semua produk katalog"}
+                    {bulkScope === "category" && `Kategori: ${CATEGORY_LABELS[bulkCategory as ProductCategory] ?? bulkCategory}`}
+                    {bulkScope === "draft" && "Semua produk berstatus Draft"}
+                    {bulkScope === "selected" && `${bulkSelected.size} produk terpilih`}
+                  </span>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  <span className="font-semibold text-foreground">{getBulkTargets().length}</span> produk akan di{bulkAction === "publish" ? "aktifkan (status → Aktif)" : "nonaktifkan (status → Nonaktif)"}
+                </p>
+              </div>
+              {getBulkTargets().length === 0 && (
+                <p className="text-sm text-muted-foreground text-center py-2">
+                  Tidak ada produk yang perlu diubah statusnya.
+                </p>
+              )}
+            </div>
+            <DialogFooter className="gap-2">
+              <Button variant="outline" onClick={() => setBulkDialogOpen(false)}>Batal</Button>
+              <Button
+                onClick={executeBulk}
+                disabled={bulkLoading || getBulkTargets().length === 0}
+                variant={bulkAction === "unpublish" ? "destructive" : "default"}
+              >
+                {bulkLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                {bulkAction === "publish" ? "Aktifkan" : "Nonaktifkan"} ({getBulkTargets().length})
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+    </DashboardLayout>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Add Modal — Revamped
+// ══════════════════════════════════════════════════════════════════════════════
+interface AddModalProps {
+  masterProducts: MasterProduct[];
+  stockAgg: StockAggregate[];
+  onClose: () => void;
+  onSaved: () => void;
+  user: { id: string; email?: string } | null;
+  role: string | null;
+}
+
+function AddCatalogModal({ masterProducts, stockAgg, onClose, onSaved, user, role }: AddModalProps) {
+  const { toast } = useToast();
+  const [selectedId, setSelectedId] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [shortDesc, setShortDesc] = useState("");
+  const [fullDesc, setFullDesc] = useState("");
+  const [promoLabel, setPromoLabel] = useState("");
+  const [thumbnail, setThumbnail] = useState<string | null>(null);
+  const [gallery, setGallery] = useState<(string | null)[]>([null, null, null, null]);
+  const [publishPos, setPublishPos] = useState(false);
+  const [publishWeb, setPublishWeb] = useState(false);
+  const [publishMarket, setPublishMarket] = useState(false);
+  const [highlight, setHighlight] = useState(false);
+  const [showCondition, setShowCondition] = useState(true);
+  const [saving, setSaving] = useState(false);
+  // Bonus products
+  const [bonusProducts, setBonusProducts] = useState<BonusProduct[]>([]);
+  const [selectedBonus, setSelectedBonus] = useState<BonusItem[]>([]);
+  const [bonusSearch, setBonusSearch] = useState("");
+
+  const selectedMaster = masterProducts.find(m => m.id === selectedId);
+  const selectedAgg = stockAgg.find(a => a.product_id === selectedId);
+
+  useEffect(() => {
+    db.from("bonus_items").select("*").eq("is_active", true).order("sort_order")
+      .then(({ data }) => setBonusProducts(data ?? []));
+  }, []);
+
+  useEffect(() => {
+    if (selectedMaster) {
+      setDisplayName(`${selectedMaster.series} ${selectedMaster.storage_gb}GB ${selectedMaster.color}`);
+    }
+  }, [selectedId, selectedMaster]);
+
+  const filteredBonus = bonusProducts.filter(b =>
+    b.name.toLowerCase().includes(bonusSearch.toLowerCase())
+  );
+
+  function toggleBonus(b: BonusProduct) {
+    setSelectedBonus(prev => {
+      const exists = prev.find(i => i.id === b.id);
+      if (exists) return prev.filter(i => i.id !== b.id);
+      return [...prev, { id: b.id, name: b.name, icon: b.icon, qty: 1 }];
+    });
+  }
+
+  async function handleSave() {
+    if (!selectedId || !displayName.trim()) {
+      toast({ title: "Pilih produk dan isi nama tampilan", variant: "destructive" }); return;
+    }
+    setSaving(true);
+    const slug = displayName.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
+    const galleryUrls = gallery.filter(Boolean) as string[];
+    const { error } = await db.from("catalog_products").insert({
+      product_id: selectedId,
+      slug,
+      display_name: displayName.trim(),
+      short_description: shortDesc.trim() || null,
+      full_description: fullDesc.trim() || null,
+      thumbnail_url: thumbnail,
+      gallery_urls: galleryUrls,
+      catalog_status: "draft",
+      publish_to_pos: publishPos,
+      publish_to_web: publishWeb,
+      publish_to_marketplace: publishMarket,
+      price_strategy: "min_price",
+      highlight_product: highlight,
+      promo_label: promoLabel.trim() || null,
+      show_condition_breakdown: showCondition,
+      bonus_items: selectedBonus.length > 0 ? selectedBonus : [],
+      created_by: user?.id,
+      updated_by: user?.id,
+    });
+    setSaving(false);
+    if (error) {
+      if (error.code === "23505") { toast({ title: "Produk ini sudah ada di katalog", variant: "destructive" }); }
+      else toast({ title: "Gagal menambahkan", description: error.message, variant: "destructive" });
+      return;
+    }
+    await logActivity({
+      action: "create_catalog",
+      actor_id: user?.id, actor_email: user?.email, actor_role: role,
+      target_id: selectedId, metadata: { display_name: displayName.trim() },
+    });
+    toast({ title: "Produk berhasil ditambahkan ke katalog" });
+    onSaved();
+  }
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent className="max-w-2xl max-h-[92vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Tambah Produk ke Katalog</DialogTitle>
+          <p className="text-xs text-muted-foreground">Harga diambil otomatis dari unit yang berstatus "Tersedia" di manajemen stok.</p>
+        </DialogHeader>
+
+        <div className="space-y-5 py-2">
+          {/* Product select */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Pilih Produk (SKU)</label>
+            {masterProducts.length === 0 ? (
+              <div className="rounded-lg bg-muted/50 border border-border p-3 text-sm text-muted-foreground flex items-center gap-2">
+                <Package className="w-4 h-4 shrink-0" />
+                Semua produk dengan stok tersedia sudah masuk katalog. Tambahkan stok baru di Manajemen Stok terlebih dahulu.
+              </div>
+            ) : (
+              <Select value={selectedId} onValueChange={setSelectedId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Pilih produk dari Master Data yang memiliki stok tersedia…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {masterProducts.map(m => {
+                    const agg = stockAgg.find(a => a.product_id === m.id);
+                    return (
+                      <SelectItem key={m.id} value={m.id}>
+                        {m.series} {m.storage_gb}GB {m.color} — {agg?.total ?? 0} unit tersedia
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
+              </Select>
+            )}
+            {selectedAgg && (
+              <p className="text-xs text-muted-foreground">
+                Harga mulai: <span className="font-semibold text-foreground">{selectedAgg.min_price ? formatRupiah(selectedAgg.min_price) : "Belum ditetapkan"}</span>
+                {" · "}{selectedAgg.total} unit tersedia ({selectedAgg.no_minus} no-minus, {selectedAgg.minus} minus)
+              </p>
+            )}
+          </div>
+
+          {/* Nama tampilan */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Nama Tampilan untuk Sales & POS</label>
+            <p className="text-[11px] text-muted-foreground">Nama ini yang akan dilihat tim sales dan pelanggan. Diisi otomatis, bisa diubah.</p>
+            <Input value={displayName} onChange={e => setDisplayName(e.target.value)}
+              placeholder="Contoh: iPhone 15 Pro Max 256GB Natural Titanium" />
+          </div>
+
+          {/* Deskripsi singkat */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Deskripsi Singkat <span className="text-muted-foreground font-normal normal-case">(opsional)</span></label>
+            <Input value={shortDesc} onChange={e => setShortDesc(e.target.value)}
+              placeholder="Tagline pendek yang muncul di kartu produk (maks. 100 karakter)" maxLength={100} />
+          </div>
+
+          {/* Deskripsi lengkap */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Deskripsi Lengkap <span className="text-muted-foreground font-normal normal-case">(opsional)</span></label>
+            <Textarea value={fullDesc} onChange={e => setFullDesc(e.target.value)}
+              placeholder="Deskripsi produk untuk halaman detail di website atau marketplace…"
+              className="min-h-[80px] resize-none" />
+          </div>
+
+          {/* Foto utama */}
+          <ImageUploadBox
+            label="Foto Utama"
+            hint="Ukuran ideal: 800×600 px. Foto ini tampil di kartu produk."
+            value={thumbnail}
+            onChange={setThumbnail}
+            aspect="aspect-[4/3]"
+          />
+
+          {/* Galeri — 4 slots */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Galeri Foto <span className="text-muted-foreground font-normal normal-case">(maks. 4 foto tambahan)</span></label>
+            <div className="grid grid-cols-4 gap-2">
+              {gallery.map((url, i) => (
+                <ImageUploadBox
+                  key={i}
+                  label=""
+                  value={url}
+                  onChange={newUrl => {
+                    const g = [...gallery];
+                    g[i] = newUrl;
+                    setGallery(g);
+                  }}
+                  aspect="aspect-square"
+                />
+              ))}
+            </div>
+          </div>
+
+          {/* Label promo */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Label Promo <span className="text-muted-foreground font-normal normal-case">(opsional)</span></label>
+            <Input value={promoLabel} onChange={e => setPromoLabel(e.target.value)}
+              placeholder="Contoh: PROMO LEBARAN, DISKON 10%, READY STOCK" maxLength={30} />
+          </div>
+
+          {/* Publish ke kanal */}
+          <div className="space-y-2">
+            <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Tampilkan di Kanal</label>
+            <div className="grid grid-cols-3 gap-2">
+              {[
+                { key: "pos", label: "POS", icon: Store, value: publishPos, set: setPublishPos },
+                { key: "web", label: "Website", icon: Globe, value: publishWeb, set: setPublishWeb },
+                { key: "market", label: "Marketplace", icon: ShoppingCart, value: publishMarket, set: setPublishMarket },
+              ].map(ch => (
+                <button key={ch.key} type="button" onClick={() => ch.set(!ch.value)}
+                  className={cn(
+                    "flex flex-col items-center gap-2 py-4 rounded-xl border-2 transition-all text-sm font-medium",
+                    ch.value ? "border-foreground bg-foreground/5 text-foreground" : "border-border text-muted-foreground hover:border-foreground/30"
+                  )}>
+                  <ch.icon className="w-5 h-5" />
+                  {ch.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Bonus Products */}
+          <div className="space-y-2">
+            <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+              Bonus Produk <span className="text-muted-foreground font-normal normal-case">(opsional — hadiah gratis untuk pembeli)</span>
+            </label>
+            {selectedBonus.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {selectedBonus.map(b => (
+                  <span key={b.id} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-foreground/5 border border-border text-xs font-medium text-foreground">
+                    {b.icon && <span>{b.icon}</span>}
+                    {b.name}
+                    <button type="button" onClick={() => toggleBonus({ id: b.id, name: b.name, icon: b.icon, is_active: true, description: null, sort_order: 0 })} className="ml-0.5 text-muted-foreground hover:text-destructive">
+                      <X className="w-3 h-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+              <Input
+                placeholder="Cari bonus produk..."
+                value={bonusSearch}
+                onChange={e => setBonusSearch(e.target.value)}
+                className="h-9 pl-8 text-sm"
+              />
+            </div>
+            <div className="border border-border rounded-lg max-h-40 overflow-y-auto divide-y divide-border">
+              {filteredBonus.length === 0 ? (
+                <div className="px-4 py-3 text-sm text-muted-foreground">Tidak ada bonus produk ditemukan</div>
+              ) : filteredBonus.map(b => {
+                const isSelected = selectedBonus.some(i => i.id === b.id);
+                return (
+                  <button
+                    key={b.id}
+                    type="button"
+                    onClick={() => toggleBonus(b)}
+                    className={cn(
+                      "w-full flex items-center gap-3 px-3 py-2.5 text-sm text-left transition-colors hover:bg-accent",
+                      isSelected && "bg-foreground/5"
+                    )}
+                  >
+                    <div className={cn(
+                      "w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors",
+                      isSelected ? "border-foreground bg-foreground" : "border-border"
+                    )}>
+                      {isSelected && <Check className="w-2.5 h-2.5 text-background" strokeWidth={3} />}
+                    </div>
+                    {b.icon && <span className="text-base leading-none">{b.icon}</span>}
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-foreground truncate">{b.name}</p>
+                      {b.description && <p className="text-xs text-muted-foreground truncate">{b.description}</p>}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Options */}
+          <div className="grid grid-cols-2 gap-3">
+            <button type="button" onClick={() => setHighlight(!highlight)}
+              className={cn("flex items-center gap-2 text-sm py-2.5 px-3 rounded-lg border transition-colors",
+                highlight ? "border-foreground bg-foreground/5 text-foreground" : "border-border text-muted-foreground hover:border-foreground/30")}>
+              <Star className={cn("w-4 h-4", highlight && "fill-current")} /> Produk Unggulan
+            </button>
+            <button type="button" onClick={() => setShowCondition(!showCondition)}
+              className={cn("flex items-center gap-2 text-sm py-2.5 px-3 rounded-lg border transition-colors",
+                showCondition ? "border-foreground bg-foreground/5 text-foreground" : "border-border text-muted-foreground hover:border-foreground/30")}>
+              <Eye className="w-4 h-4" /> Tampilkan Kondisi
+            </button>
+          </div>
+        </div>
+
+        <DialogFooter className="gap-2 pt-2">
+          <Button variant="outline" onClick={onClose}>Batal</Button>
+          <Button onClick={handleSave} disabled={saving || !selectedId || masterProducts.length === 0}>
+            {saving ? <div className="w-4 h-4 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin mr-2" /> : null}
+            Simpan ke Katalog
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Edit Modal
+// ══════════════════════════════════════════════════════════════════════════════
+interface EditModalProps {
+  item: CatalogProduct;
+  agg?: StockAggregate;
+  isSuperAdmin: boolean;
+  onClose: () => void;
+  onSaved: () => void;
+  onDelete?: () => void;
+  user: { id: string; email?: string } | null;
+  role: string | null;
+}
+
+function EditCatalogModal({ item, agg, isSuperAdmin, onClose, onSaved, onDelete, user, role }: EditModalProps) {
+  const { toast } = useToast();
+  const [displayName, setDisplayName] = useState(item.display_name);
+  const [shortDesc, setShortDesc] = useState(item.short_description ?? "");
+  const [fullDesc, setFullDesc] = useState(item.full_description ?? "");
+  const [promoLabel, setPromoLabel] = useState(item.promo_label ?? "");
+  const [thumbnail, setThumbnail] = useState<string | null>(item.thumbnail_url);
+  const [gallery, setGallery] = useState<(string | null)[]>(() => {
+    const g = [...(item.gallery_urls ?? [])];
+    while (g.length < 4) g.push(null);
+    return g.slice(0, 4);
+  });
+  const [publishPos, setPublishPos] = useState(item.publish_to_pos);
+  const [publishWeb, setPublishWeb] = useState(item.publish_to_web);
+  const [publishMarket, setPublishMarket] = useState(item.publish_to_marketplace);
+  const [highlight, setHighlight] = useState(item.highlight_product);
+  const [showCondition, setShowCondition] = useState(item.show_condition_breakdown);
+  const [saving, setSaving] = useState(false);
+  // Bonus products
+  const [bonusProducts, setBonusProducts] = useState<BonusProduct[]>([]);
+  const [selectedBonus, setSelectedBonus] = useState<BonusItem[]>(() => {
+    const existing = (item as { bonus_items?: BonusItem[] }).bonus_items;
+    return Array.isArray(existing) ? existing : [];
+  });
+  const [bonusSearch, setBonusSearch] = useState("");
+
+  useEffect(() => {
+    db.from("bonus_items").select("*").eq("is_active", true).order("sort_order")
+      .then(({ data }) => setBonusProducts(data ?? []));
+  }, []);
+
+  const filteredBonus = bonusProducts.filter(b =>
+    b.name.toLowerCase().includes(bonusSearch.toLowerCase())
+  );
+
+  function toggleBonus(b: BonusProduct) {
+    setSelectedBonus(prev => {
+      const exists = prev.find(i => i.id === b.id);
+      if (exists) return prev.filter(i => i.id !== b.id);
+      return [...prev, { id: b.id, name: b.name, icon: b.icon, qty: 1 }];
+    });
+  }
+
+  async function handleSave() {
+    if (!displayName.trim()) {
+      toast({ title: "Nama tampilan wajib diisi", variant: "destructive" }); return;
+    }
+    setSaving(true);
+    const galleryUrls = gallery.filter(Boolean) as string[];
+    const { error } = await db.from("catalog_products").update({
+      display_name: displayName.trim(),
+      short_description: shortDesc.trim() || null,
+      full_description: fullDesc.trim() || null,
+      thumbnail_url: thumbnail,
+      gallery_urls: galleryUrls,
+      publish_to_pos: publishPos,
+      publish_to_web: publishWeb,
+      publish_to_marketplace: publishMarket,
+      highlight_product: isSuperAdmin ? highlight : item.highlight_product,
+      promo_label: isSuperAdmin ? (promoLabel.trim() || null) : item.promo_label,
+      show_condition_breakdown: showCondition,
+      bonus_items: selectedBonus,
+      updated_by: user?.id,
+    }).eq("id", item.id);
+    setSaving(false);
+    if (error) { toast({ title: "Gagal menyimpan", description: error.message, variant: "destructive" }); return; }
+    await logActivity({
+      action: "update_catalog",
+      actor_id: user?.id, actor_email: user?.email, actor_role: role,
+      target_id: item.product_id, metadata: { display_name: displayName.trim() },
+    });
+    toast({ title: "Perubahan disimpan" });
+    onSaved();
+  }
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent className="max-w-2xl max-h-[92vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Edit Produk Katalog</DialogTitle>
+          <p className="text-xs text-muted-foreground">
+            Harga ditentukan dari stok yang tersedia · {" "}
+            <span className="font-medium text-foreground">{agg ? `${formatRupiah(agg.min_price)} — ${agg.total} unit` : "Stok habis"}</span>
+          </p>
+        </DialogHeader>
+
+        <div className="space-y-5 py-2">
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Nama Tampilan</label>
+            <Input value={displayName} onChange={e => setDisplayName(e.target.value)} />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Deskripsi Singkat</label>
+            <Input value={shortDesc} onChange={e => setShortDesc(e.target.value)} maxLength={100}
+              placeholder="Tagline pendek yang muncul di kartu produk" />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Deskripsi Lengkap</label>
+            <Textarea value={fullDesc} onChange={e => setFullDesc(e.target.value)}
+              className="min-h-[80px] resize-none" />
+          </div>
+
+          <ImageUploadBox
+            label="Foto Utama"
+            hint="Ukuran ideal: 800×600 px"
+            value={thumbnail}
+            onChange={setThumbnail}
+            aspect="aspect-[4/3]"
+          />
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Galeri Foto <span className="text-muted-foreground font-normal normal-case">(maks. 4 foto)</span></label>
+            <div className="grid grid-cols-4 gap-2">
+              {gallery.map((url, i) => (
+                <ImageUploadBox
+                  key={i}
+                  label=""
+                  value={url}
+                  onChange={newUrl => {
+                    const g = [...gallery];
+                    g[i] = newUrl;
+                    setGallery(g);
+                  }}
+                  aspect="aspect-square"
+                />
+              ))}
+            </div>
+          </div>
+
+          {isSuperAdmin && (
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Label Promo</label>
+              <Input value={promoLabel} onChange={e => setPromoLabel(e.target.value)} maxLength={30}
+                placeholder="Contoh: BEST SELLER, DISKON 10%" />
+            </div>
+          )}
+
+          <div className="space-y-2">
+            <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Tampilkan di Kanal</label>
+            <div className="grid grid-cols-3 gap-2">
+              {[
+                { key: "pos", label: "POS", icon: Store, value: publishPos, set: setPublishPos },
+                { key: "web", label: "Website", icon: Globe, value: publishWeb, set: setPublishWeb },
+                { key: "market", label: "Marketplace", icon: ShoppingCart, value: publishMarket, set: setPublishMarket },
+              ].map(ch => (
+                <button key={ch.key} type="button" onClick={() => ch.set(!ch.value)}
+                  className={cn(
+                    "flex flex-col items-center gap-2 py-4 rounded-xl border-2 transition-all text-sm font-medium",
+                    ch.value ? "border-foreground bg-foreground/5 text-foreground" : "border-border text-muted-foreground hover:border-foreground/30"
+                  )}>
+                  <ch.icon className="w-5 h-5" />
+                  {ch.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Bonus Products */}
+          <div className="space-y-2">
+            <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+              Bonus Produk <span className="text-muted-foreground font-normal normal-case">(opsional — hadiah gratis untuk pembeli)</span>
+            </label>
+            {selectedBonus.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {selectedBonus.map(b => (
+                  <span key={b.id} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-foreground/5 border border-border text-xs font-medium text-foreground">
+                    {b.icon && <span>{b.icon}</span>}
+                    {b.name}
+                    <button type="button" onClick={() => toggleBonus({ id: b.id, name: b.name, icon: b.icon, is_active: true, description: null, sort_order: 0 })} className="ml-0.5 text-muted-foreground hover:text-destructive">
+                      <X className="w-3 h-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+              <Input
+                placeholder="Cari bonus produk..."
+                value={bonusSearch}
+                onChange={e => setBonusSearch(e.target.value)}
+                className="h-9 pl-8 text-sm"
+              />
+            </div>
+            <div className="border border-border rounded-lg max-h-40 overflow-y-auto divide-y divide-border">
+              {filteredBonus.length === 0 ? (
+                <div className="px-4 py-3 text-sm text-muted-foreground">Tidak ada bonus produk ditemukan</div>
+              ) : filteredBonus.map(b => {
+                const isSelected = selectedBonus.some(i => i.id === b.id);
+                return (
+                  <button
+                    key={b.id}
+                    type="button"
+                    onClick={() => toggleBonus(b)}
+                    className={cn(
+                      "w-full flex items-center gap-3 px-3 py-2.5 text-sm text-left transition-colors hover:bg-accent",
+                      isSelected && "bg-foreground/5"
+                    )}
+                  >
+                    <div className={cn(
+                      "w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors",
+                      isSelected ? "border-foreground bg-foreground" : "border-border"
+                    )}>
+                      {isSelected && <Check className="w-2.5 h-2.5 text-background" strokeWidth={3} />}
+                    </div>
+                    {b.icon && <span className="text-base leading-none">{b.icon}</span>}
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-foreground truncate">{b.name}</p>
+                      {b.description && <p className="text-xs text-muted-foreground truncate">{b.description}</p>}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            {isSuperAdmin && (
+              <button type="button" onClick={() => setHighlight(!highlight)}
+                className={cn("flex items-center gap-2 text-sm py-2.5 px-3 rounded-lg border transition-colors",
+                  highlight ? "border-foreground bg-foreground/5 text-foreground" : "border-border text-muted-foreground hover:border-foreground/30")}>
+                <Star className={cn("w-4 h-4", highlight && "fill-current")} /> Produk Unggulan
+              </button>
+            )}
+            <button type="button" onClick={() => setShowCondition(!showCondition)}
+              className={cn("flex items-center gap-2 text-sm py-2.5 px-3 rounded-lg border transition-colors",
+                showCondition ? "border-foreground bg-foreground/5 text-foreground" : "border-border text-muted-foreground hover:border-foreground/30")}>
+              <Eye className="w-4 h-4" /> Tampilkan Kondisi
+            </button>
+          </div>
+        </div>
+
+        <DialogFooter className="gap-2 flex-wrap pt-2">
+          {onDelete && (
+            <Button variant="destructive" onClick={onDelete} className="mr-auto">
+              <Trash2 className="w-4 h-4 mr-1.5" /> Hapus dari Katalog
+            </Button>
+          )}
+          <Button variant="outline" onClick={onClose}>Batal</Button>
+          <Button onClick={handleSave} disabled={saving}>
+            {saving && <div className="w-4 h-4 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin mr-2" />}
+            Simpan Perubahan
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Detail Modal
+// ══════════════════════════════════════════════════════════════════════════════
+interface DetailModalProps {
+  item: CatalogProduct;
+  agg?: StockAggregate;
+  onClose: () => void;
+}
+
+function DetailCatalogModal({ item, agg, onClose }: DetailModalProps) {
+  const [activeImg, setActiveImg] = useState(item.thumbnail_url);
+  const allImages = [item.thumbnail_url, ...(item.gallery_urls ?? [])].filter(Boolean) as string[];
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent className="max-w-2xl max-h-[92vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="text-base">{item.display_name}</DialogTitle>
+          <div className="flex items-center gap-2 flex-wrap">
+            {catalogStatusBadge(item.catalog_status)}
+            {item.highlight_product && (
+              <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[hsl(var(--status-coming-soon-bg))] text-[hsl(var(--status-coming-soon-fg))]">
+                ⭐ Unggulan
+              </span>
+            )}
+          </div>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          {/* Main image */}
+          <div className="aspect-[4/3] rounded-xl overflow-hidden">
+            {activeImg ? (
+              <img src={activeImg} alt="" className="w-full h-full object-cover" />
+            ) : (
+              <CategoryImagePlaceholder category={item.master?.category} className="w-full h-full rounded-xl" />
+            )}
+          </div>
+          {/* Gallery thumbnails */}
+          {allImages.length > 1 && (
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              {allImages.map((url, i) => (
+                <button key={i} onClick={() => setActiveImg(url)}
+                  className={cn("w-16 h-16 rounded-lg overflow-hidden shrink-0 border-2 transition-colors",
+                    activeImg === url ? "border-foreground" : "border-border hover:border-foreground/30")}>
+                  <img src={url} alt="" className="w-full h-full object-cover" />
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Price & Stock */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="bg-muted/40 rounded-xl p-4">
+              <p className="text-xs text-muted-foreground mb-1">Harga Mulai</p>
+              <p className="text-lg font-bold text-foreground">{agg?.min_price ? formatRupiah(agg.min_price) : "—"}</p>
+              {agg?.max_price && agg.max_price !== agg.min_price && (
+                <p className="text-xs text-muted-foreground">s/d {formatRupiah(agg.max_price)}</p>
+              )}
+            </div>
+            <div className="bg-muted/40 rounded-xl p-4">
+              <p className="text-xs text-muted-foreground mb-1">Stok Tersedia</p>
+              <p className="text-lg font-bold text-foreground">{agg?.total ?? 0} unit</p>
+              {item.show_condition_breakdown && agg && (
+                <p className="text-xs text-muted-foreground">{agg.no_minus} no-minus · {agg.minus} minus</p>
+              )}
+            </div>
+          </div>
+
+          {item.short_description && (
+            <p className="text-sm text-muted-foreground">{item.short_description}</p>
+          )}
+
+          {item.full_description && (
+            <div className="space-y-1">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Deskripsi</p>
+              <p className="text-sm text-foreground whitespace-pre-wrap">{item.full_description}</p>
+            </div>
+          )}
+
+          {/* Channels */}
+          <div className="flex gap-2 flex-wrap">
+            {item.publish_to_pos && <Badge variant="outline" className="gap-1"><Store className="w-3 h-3" />POS</Badge>}
+            {item.publish_to_web && <Badge variant="outline" className="gap-1"><Globe className="w-3 h-3" />Website</Badge>}
+            {item.publish_to_marketplace && <Badge variant="outline" className="gap-1"><ShoppingCart className="w-3 h-3" />Marketplace</Badge>}
+          </div>
+
+          {item.promo_label && (
+            <div className="flex items-center gap-2 text-sm text-[hsl(var(--status-minus-fg))]">
+              <Tag className="w-4 h-4" /> {item.promo_label}
+            </div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Discount Manager Modal
+// ══════════════════════════════════════════════════════════════════════════════
+interface DiscountManagerProps {
+  discountCodes: DiscountCode[];
+  onClose: () => void;
+  onSaved: () => void;
+  user: { id: string; email?: string } | null;
+  role: string | null;
+}
+
+const DISCOUNT_TYPES = [
+  { value: "percentage", label: "Persentase", icon: Percent, hint: "Diskon dalam persen (misal: 10%)" },
+  { value: "fixed_amount", label: "Potongan Tetap", icon: DollarSign, hint: "Diskon dalam nominal Rupiah tetap" },
+  { value: "buy_x_get_y", label: "Beli X Gratis Y", icon: ShoppingCart, hint: "Beli sejumlah unit, dapat gratis" },
+  { value: "min_purchase", label: "Min. Pembelian", icon: Tag, hint: "Diskon jika pembelian melebihi nilai tertentu" },
+  { value: "flash_sale", label: "Flash Sale", icon: AlertCircle, hint: "Diskon kilat dengan batas kuota & waktu" },
+];
+
+function DiscountManagerModal({ discountCodes, onClose, onSaved, user, role }: DiscountManagerProps) {
+  const { toast } = useToast();
+  const [view, setView] = useState<"list" | "create">("list");
+  const [editCode, setEditCode] = useState<DiscountCode | null>(null);
+
+  // Form state
+  const [code, setCode] = useState("");
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [discType, setDiscType] = useState("percentage");
+  const [percent, setPercent] = useState("");
+  const [amount, setAmount] = useState("");
+  const [minPurchase, setMinPurchase] = useState("");
+  const [buyQty, setBuyQty] = useState("");
+  const [getQty, setGetQty] = useState("");
+  const [maxUses, setMaxUses] = useState("");
+  const [validUntil, setValidUntil] = useState("");
+  const [isActive, setIsActive] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  function resetForm() {
+    setCode(""); setName(""); setDescription(""); setDiscType("percentage");
+    setPercent(""); setAmount(""); setMinPurchase(""); setBuyQty(""); setGetQty("");
+    setMaxUses(""); setValidUntil(""); setIsActive(true); setEditCode(null);
+  }
+
+  function startEdit(dc: DiscountCode) {
+    setCode(dc.code);
+    setName(dc.name);
+    setDescription(dc.description ?? "");
+    setDiscType(dc.discount_type);
+    setPercent(dc.discount_percent?.toString() ?? "");
+    setAmount(dc.discount_amount?.toString() ?? "");
+    setMinPurchase(dc.min_purchase_amount?.toString() ?? "");
+    setBuyQty(dc.buy_quantity?.toString() ?? "");
+    setGetQty(dc.get_quantity?.toString() ?? "");
+    setMaxUses(dc.max_uses?.toString() ?? "");
+    setValidUntil(dc.valid_until ? dc.valid_until.slice(0, 10) : "");
+    setIsActive(dc.is_active);
+    setEditCode(dc);
+    setView("create");
+  }
+
+  async function handleSave() {
+    if (!code.trim() || !name.trim()) {
+      toast({ title: "Kode dan nama wajib diisi", variant: "destructive" }); return;
+    }
+    setSaving(true);
+    const payload = {
+      code: code.trim().toUpperCase(),
+      name: name.trim(),
+      description: description.trim() || null,
+      discount_type: discType,
+      discount_percent: discType === "percentage" || discType === "flash_sale" ? Number(percent) || null : null,
+      discount_amount: (discType === "fixed_amount" || discType === "flash_sale") ? Number(amount) || null : null,
+      min_purchase_amount: minPurchase ? Number(minPurchase) : null,
+      buy_quantity: discType === "buy_x_get_y" ? Number(buyQty) || null : null,
+      get_quantity: discType === "buy_x_get_y" ? Number(getQty) || null : null,
+      max_uses: maxUses ? Number(maxUses) : null,
+      valid_until: validUntil || null,
+      is_active: isActive,
+      created_by: user?.id,
+    };
+    let error;
+    if (editCode) {
+      ({ error } = await db.from("discount_codes").update(payload).eq("id", editCode.id));
+    } else {
+      ({ error } = await db.from("discount_codes").insert(payload));
+    }
+    setSaving(false);
+    if (error) {
+      const msg = error.code === "23505" ? "Kode ini sudah ada, gunakan kode lain." : error.message;
+      toast({ title: "Gagal menyimpan", description: msg, variant: "destructive" }); return;
+    }
+    await logActivity({
+      action: editCode ? "update_discount_code" : "create_discount_code",
+      actor_id: user?.id, actor_email: user?.email, actor_role: role,
+      metadata: { code: code.trim().toUpperCase(), name: name.trim(), type: discType },
+    });
+    toast({ title: editCode ? "Kode diskon diperbarui" : "Kode diskon berhasil dibuat" });
+    resetForm();
+    setView("list");
+    onSaved();
+  }
+
+  async function handleDelete(dc: DiscountCode) {
+    if (!confirm(`Hapus kode diskon "${dc.code}"?`)) return;
+    const { error } = await db.from("discount_codes").delete().eq("id", dc.id);
+    if (error) { toast({ title: "Gagal menghapus", variant: "destructive" }); return; }
+    await logActivity({
+      action: "delete_discount_code",
+      actor_id: user?.id, actor_email: user?.email, actor_role: role,
+      metadata: { code: dc.code },
+    });
+    toast({ title: "Kode diskon dihapus" });
+    onSaved();
+  }
+
+  async function toggleActive(dc: DiscountCode) {
+    await db.from("discount_codes").update({ is_active: !dc.is_active }).eq("id", dc.id);
+    toast({ title: dc.is_active ? "Kode dinonaktifkan" : "Kode diaktifkan" });
+    onSaved();
+  }
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent className="max-w-2xl max-h-[92vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Ticket className="w-5 h-5" />
+            {view === "list" ? "Manajemen Kode Diskon" : (editCode ? "Edit Kode Diskon" : "Buat Kode Diskon Baru")}
+          </DialogTitle>
+        </DialogHeader>
+
+        {view === "list" ? (
+          <div className="space-y-4">
+            <Button onClick={() => { resetForm(); setView("create"); }} className="w-full gap-2">
+              <Plus className="w-4 h-4" /> Buat Kode Diskon Baru
+            </Button>
+
+            {discountCodes.length === 0 ? (
+              <div className="text-center py-10 text-muted-foreground text-sm">
+                Belum ada kode diskon. Buat kode pertama untuk mulai memberikan promo ke pelanggan.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {discountCodes.map(dc => {
+                  const typeInfo = DISCOUNT_TYPES.find(t => t.value === dc.discount_type);
+                  const TypeIcon = typeInfo?.icon ?? Tag;
+                  const isExpired = dc.valid_until && new Date(dc.valid_until) < new Date();
+                  return (
+                    <div key={dc.id} className={cn(
+                      "border border-border rounded-xl p-4 flex items-start gap-3",
+                      !dc.is_active || isExpired ? "opacity-60" : ""
+                    )}>
+                      <div className="w-9 h-9 rounded-lg bg-foreground/5 flex items-center justify-center shrink-0">
+                        <TypeIcon className="w-4 h-4 text-muted-foreground" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-mono font-bold text-foreground text-sm">{dc.code}</span>
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{discountTypeLabel(dc.discount_type)}</span>
+                          {!dc.is_active && <span className="text-[10px] px-1.5 py-0.5 rounded bg-[hsl(var(--status-minus-bg))] text-[hsl(var(--status-minus-fg))]">Nonaktif</span>}
+                          {isExpired && <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-destructive">Kedaluwarsa</span>}
+                        </div>
+                        <p className="text-xs text-foreground mt-0.5">{dc.name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {dc.discount_percent ? `${dc.discount_percent}%` : ""}
+                          {dc.discount_amount ? formatRupiah(dc.discount_amount) : ""}
+                          {dc.buy_quantity ? ` · Beli ${dc.buy_quantity} Gratis ${dc.get_quantity}` : ""}
+                          {dc.min_purchase_amount ? ` · Min. ${formatRupiah(dc.min_purchase_amount)}` : ""}
+                          {" · "}{dc.used_count}/{dc.max_uses ?? "∞"} pemakaian
+                          {dc.valid_until ? ` · s/d ${new Date(dc.valid_until).toLocaleDateString("id-ID")}` : ""}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button onClick={() => toggleActive(dc)}
+                          className="p-1.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors">
+                          <Eye className="w-3.5 h-3.5" />
+                        </button>
+                        <button onClick={() => startEdit(dc)}
+                          className="p-1.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors">
+                          <Edit3 className="w-3.5 h-3.5" />
+                        </button>
+                        <button onClick={() => handleDelete(dc)}
+                          className="p-1.5 rounded hover:bg-accent text-destructive hover:text-destructive/70 transition-colors">
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {/* Code & Name */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Kode Diskon</label>
+                <Input value={code} onChange={e => setCode(e.target.value.toUpperCase())} placeholder="PROMO10" className="font-mono" maxLength={20} />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Nama Program</label>
+                <Input value={name} onChange={e => setName(e.target.value)} placeholder="Promo Lebaran 10%" />
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Deskripsi</label>
+              <Input value={description} onChange={e => setDescription(e.target.value)} placeholder="Keterangan singkat untuk admin (opsional)" />
+            </div>
+
+            {/* Type selector */}
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Tipe Diskon</label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {DISCOUNT_TYPES.map(t => (
+                  <button key={t.value} type="button" onClick={() => setDiscType(t.value)}
+                    className={cn(
+                      "flex items-start gap-3 p-3 rounded-xl border-2 text-left transition-all",
+                      discType === t.value ? "border-foreground bg-foreground/5" : "border-border hover:border-foreground/30"
+                    )}>
+                    <t.icon className="w-4 h-4 mt-0.5 shrink-0 text-muted-foreground" />
+                    <div>
+                      <p className="text-sm font-medium text-foreground">{t.label}</p>
+                      <p className="text-[11px] text-muted-foreground">{t.hint}</p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Dynamic fields based on type */}
+            {(discType === "percentage" || discType === "flash_sale") && (
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Persentase Diskon (%)</label>
+                <Input type="number" min={1} max={100} value={percent} onChange={e => setPercent(e.target.value)} placeholder="10" />
+              </div>
+            )}
+            {(discType === "fixed_amount" || discType === "flash_sale") && (
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Nominal Diskon (Rp)</label>
+                <Input type="number" value={amount} onChange={e => setAmount(e.target.value)} placeholder="500000" />
+              </div>
+            )}
+            {discType === "buy_x_get_y" && (
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Beli (X unit)</label>
+                  <Input type="number" min={1} value={buyQty} onChange={e => setBuyQty(e.target.value)} placeholder="2" />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Gratis (Y unit)</label>
+                  <Input type="number" min={1} value={getQty} onChange={e => setGetQty(e.target.value)} placeholder="1" />
+                </div>
+              </div>
+            )}
+            {(discType === "min_purchase" || discType === "percentage" || discType === "fixed_amount") && (
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Min. Pembelian (Rp) <span className="font-normal text-muted-foreground normal-case">(opsional)</span></label>
+                <Input type="number" value={minPurchase} onChange={e => setMinPurchase(e.target.value)} placeholder="Tidak ada minimum" />
+              </div>
+            )}
+
+            {/* Usage & expiry */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Maks. Pemakaian <span className="font-normal normal-case">(kosong = tak terbatas)</span></label>
+                <Input type="number" min={1} value={maxUses} onChange={e => setMaxUses(e.target.value)} placeholder="∞" />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Berlaku Hingga <span className="font-normal normal-case">(kosong = selamanya)</span></label>
+                <Input type="date" value={validUntil} onChange={e => setValidUntil(e.target.value)} />
+              </div>
+            </div>
+
+            {/* Active toggle */}
+            <button type="button" onClick={() => setIsActive(!isActive)}
+              className={cn("flex items-center gap-2 text-sm py-2.5 px-4 rounded-lg border w-full justify-start transition-colors",
+                isActive ? "border-foreground bg-foreground/5 text-foreground" : "border-border text-muted-foreground")}>
+              <div className={cn("w-4 h-4 rounded-sm border-2 flex items-center justify-center shrink-0",
+                isActive ? "border-foreground bg-foreground" : "border-muted-foreground")}>
+                {isActive && <svg viewBox="0 0 12 12" className="w-2.5 h-2.5 fill-background"><path d="M1 6l3 3 7-7" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+              </div>
+              Kode diskon langsung aktif
+            </button>
+
+            <DialogFooter className="gap-2 pt-2">
+              <Button variant="outline" onClick={() => { resetForm(); setView("list"); }}>Kembali</Button>
+              <Button onClick={handleSave} disabled={saving}>
+                {saving && <div className="w-4 h-4 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin mr-2" />}
+                {editCode ? "Simpan Perubahan" : "Buat Kode Diskon"}
+              </Button>
+            </DialogFooter>
+          </div>
+        )}
+
+        {view === "list" && (
+          <DialogFooter>
+            <Button variant="outline" onClick={onClose}>Tutup</Button>
+          </DialogFooter>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}

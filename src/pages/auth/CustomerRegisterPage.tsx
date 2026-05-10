@@ -1,0 +1,296 @@
+import { useState } from "react";
+import { Link } from "react-router-dom";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
+import { Eye, EyeOff, ArrowRight, Check, Mail, ShoppingBag, RefreshCw, Clock } from "lucide-react";
+import { supabaseCustomer } from "@/integrations/supabase/customer-client";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { PublicNavbar } from "@/components/layout/PublicNavbar";
+import { useLocale } from "@/contexts/shared/LocaleContext";
+import { useRecaptcha } from "@/hooks/shared/use-recaptcha";
+import logoFull from "@/assets/logo-full.svg";
+
+function useT() {
+  const { lang } = useLocale();
+  return (id: string, en: string) => lang === "en" ? en : id;
+}
+
+const schemaId = z.object({
+  full_name: z.string().min(2, "Nama minimal 2 karakter").max(100),
+  email: z.string().email("Email tidak valid").max(255),
+  password: z.string().min(8, "Password minimal 8 karakter").regex(/[A-Z]/, "Harus mengandung huruf kapital").regex(/[0-9]/, "Harus mengandung angka"),
+  confirm_password: z.string(),
+}).refine((d) => d.password === d.confirm_password, { message: "Password tidak cocok", path: ["confirm_password"] });
+
+const schemaEn = z.object({
+  full_name: z.string().min(2, "Name must be at least 2 characters").max(100),
+  email: z.string().email("Invalid email address").max(255),
+  password: z.string().min(8, "Password must be at least 8 characters").regex(/[A-Z]/, "Must contain an uppercase letter").regex(/[0-9]/, "Must contain a number"),
+  confirm_password: z.string(),
+}).refine((d) => d.password === d.confirm_password, { message: "Passwords do not match", path: ["confirm_password"] });
+
+type FormData = z.infer<typeof schemaId>;
+
+const RESEND_COOLDOWN_MS = 2 * 60 * 60 * 1000; // 2 hours
+
+export default function CustomerRegisterPage() {
+  const { lang } = useLocale();
+  const t = useT();
+  const { getToken, verifyToken } = useRecaptcha();
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [serverError, setServerError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+  const [registeredEmail, setRegisteredEmail] = useState("");
+  const [resending, setResending] = useState(false);
+  const [resendError, setResendError] = useState<string | null>(null);
+  const [resendSuccess, setResendSuccess] = useState(false);
+  const [lastResendAt, setLastResendAt] = useState<Date | null>(null);
+
+  const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm<FormData>({
+    resolver: zodResolver(lang === "en" ? schemaEn : schemaId),
+  });
+
+  const onSubmit = async (data: FormData) => {
+    setServerError(null);
+
+    // reCAPTCHA v3 — soft check
+    const rcToken = await getToken("customer_register");
+    if (rcToken) {
+      await verifyToken(rcToken, "customer_register");
+    }
+
+    const { error } = await supabaseCustomer.auth.signUp({
+      email: data.email,
+      password: data.password,
+      options: {
+        emailRedirectTo: `${window.location.origin}/login`,
+        data: { full_name: data.full_name },
+      },
+    });
+
+    if (error) {
+      if (error.message.includes("already registered")) {
+        setServerError(t("Email ini sudah terdaftar.", "This email is already registered."));
+      } else {
+        setServerError(error.message);
+      }
+      return;
+    }
+
+    setRegisteredEmail(data.email);
+    setLastResendAt(new Date());
+    setDone(true);
+  };
+
+  const canResend = !lastResendAt || (Date.now() - lastResendAt.getTime() >= RESEND_COOLDOWN_MS);
+
+  const getNextResendTime = () => {
+    if (!lastResendAt) return null;
+    const nextTime = new Date(lastResendAt.getTime() + RESEND_COOLDOWN_MS);
+    const diffMs = nextTime.getTime() - Date.now();
+    if (diffMs <= 0) return null;
+    const hours = Math.floor(diffMs / (1000 * 60 * 60));
+    const minutes = Math.ceil((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+    if (hours > 0) return lang === "en" ? `${hours} hours ${minutes} minutes` : `${hours} jam ${minutes} menit`;
+    return lang === "en" ? `${minutes} minutes` : `${minutes} menit`;
+  };
+
+  const handleResend = async () => {
+    if (!canResend) return;
+    setResending(true);
+    setResendError(null);
+    setResendSuccess(false);
+
+    const { data: profile } = await supabaseCustomer
+      .from("user_profiles")
+      .select("last_resend_at")
+      .eq("email", registeredEmail)
+      .maybeSingle();
+
+    if (profile?.last_resend_at) {
+      const dbLastResend = new Date(profile.last_resend_at);
+      if (Date.now() - dbLastResend.getTime() < RESEND_COOLDOWN_MS) {
+        const elapsed = Date.now() - dbLastResend.getTime();
+        const remainingMs = RESEND_COOLDOWN_MS - elapsed;
+        const hours = Math.floor(remainingMs / (1000 * 60 * 60));
+        const minutes = Math.ceil((remainingMs % (1000 * 60 * 60)) / (1000 * 60));
+        const timeStr = hours > 0 
+          ? (lang === "en" ? `${hours} hours ${minutes} minutes` : `${hours} jam ${minutes} menit`)
+          : (lang === "en" ? `${minutes} minutes` : `${minutes} menit`);
+        setResendError(t(`Pengiriman ulang dibatasi. Coba lagi dalam ${timeStr}.`, `Resend limit reached. Try again in ${timeStr}.`));
+        setLastResendAt(dbLastResend);
+        setResending(false);
+        return;
+      }
+    }
+
+    const { error } = await supabaseCustomer.auth.resend({
+      type: "signup",
+      email: registeredEmail,
+      options: { emailRedirectTo: `${window.location.origin}/login` },
+    });
+
+    if (error) {
+      setResendError(error.message);
+    } else {
+      const now = new Date();
+      setLastResendAt(now);
+      setResendSuccess(true);
+
+      await supabaseCustomer
+        .from("user_profiles")
+        .update({ last_resend_at: now.toISOString() })
+        .eq("email", registeredEmail);
+    }
+
+    setResending(false);
+  };
+
+  if (done) {
+    const waitTime = getNextResendTime();
+
+    return (
+      <div className="min-h-screen bg-background flex flex-col">
+        <PublicNavbar />
+        <div className="flex-1 flex items-center justify-center p-6">
+          <div className="max-w-sm w-full text-center space-y-6">
+            <div className="w-16 h-16 rounded-full bg-foreground flex items-center justify-center mx-auto">
+              <Check className="w-7 h-7 text-background" strokeWidth={2.5} />
+            </div>
+            <div className="space-y-2">
+              <h2 className="text-2xl font-bold">
+                {lang === "en" ? "Email Verification" : "Verifikasi Email"}
+              </h2>
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                {lang === "en"
+                  ? <>A verification link has been sent to{" "}<span className="font-semibold text-foreground">{registeredEmail}</span>. Click the link to activate your account and start shopping.</>
+                  : <>Link verifikasi telah dikirim ke{" "}<span className="font-semibold text-foreground">{registeredEmail}</span>. Klik link tersebut untuk mengaktifkan akun dan mulai berbelanja.</>
+                }
+              </p>
+            </div>
+            <div className="rounded-xl border border-border bg-muted/30 px-5 py-4 flex items-center gap-3 text-left">
+              <Mail className="w-4 h-4 text-muted-foreground shrink-0" />
+              <div>
+                <p className="text-xs font-semibold text-foreground">
+                  {lang === "en" ? "Check your Spam folder" : "Cek folder Spam"}
+                </p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {lang === "en" ? "If it's not in your inbox, check the spam/junk folder." : "Jika tidak masuk inbox, cek folder spam/junk email Anda."}
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              {resendSuccess && (
+                <div className="rounded-lg border border-border bg-muted/30 px-4 py-3 text-sm text-foreground text-left flex items-center gap-2">
+                  <Check className="w-4 h-4 shrink-0" />
+                  {lang === "en" ? "Verification email resent successfully!" : "Email verifikasi berhasil dikirim ulang!"}
+                </div>
+              )}
+              {resendError && (
+                <div className="rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive text-left">
+                  {resendError}
+                </div>
+              )}
+              {!canResend && waitTime && (
+                <div className="flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
+                  <Clock className="w-3.5 h-3.5" />
+                  {lang === "en" ? `Resend available in ${waitTime}` : `Kirim ulang tersedia dalam ${waitTime}`}
+                </div>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full gap-2"
+                onClick={handleResend}
+                disabled={resending || !canResend}
+              >
+                {resending ? (
+                  <div className="w-3.5 h-3.5 border-2 border-muted-foreground/30 border-t-muted-foreground rounded-full animate-spin" />
+                ) : (
+                  <RefreshCw className="w-3.5 h-3.5" />
+                )}
+                {lang === "en" ? "Resend Verification Email" : "Kirim Ulang Email Verifikasi"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-background flex flex-col">
+      <PublicNavbar />
+
+      <div className="flex-1 flex items-center justify-center px-6 py-12">
+        <div className="w-full max-w-sm space-y-8">
+          <div className="text-center space-y-2">
+            <div className="w-14 h-14 rounded-2xl bg-foreground/5 border border-border flex items-center justify-center mx-auto">
+              <ShoppingBag className="w-7 h-7 text-foreground" />
+            </div>
+            <h1 className="text-2xl font-bold tracking-tight text-foreground">{t("Buat akun baru", "Create an account")}</h1>
+            <p className="text-sm text-muted-foreground">{t("Daftar gratis dan mulai berbelanja di Ivalora", "Sign up for free and start shopping at Ivalora")}</p>
+          </div>
+
+          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">{t("Nama Lengkap", "Full Name")}</Label>
+              <Input placeholder={t("Masukkan nama lengkap", "Enter your full name")} {...register("full_name")} className="h-11" />
+              {errors.full_name && <p className="text-xs text-destructive">{errors.full_name.message}</p>}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">{t("Email", "Email")}</Label>
+              <Input type="email" placeholder={t("Masukkan email", "Enter your email")} {...register("email")} className="h-11" />
+              {errors.email && <p className="text-xs text-destructive">{errors.email.message}</p>}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">{t("Password", "Password")}</Label>
+              <div className="relative">
+                <Input type={showPassword ? "text" : "password"} placeholder={t("Min. 8 karakter, ada huruf kapital & angka", "Min. 8 chars, uppercase & number required")} {...register("password")} className="h-11 pr-10" />
+                <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors">
+                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+              {errors.password && <p className="text-xs text-destructive">{errors.password.message}</p>}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">{t("Konfirmasi Password", "Confirm Password")}</Label>
+              <div className="relative">
+                <Input type={showConfirm ? "text" : "password"} placeholder={t("Ulangi password", "Repeat your password")} {...register("confirm_password")} className="h-11 pr-10" />
+                <button type="button" onClick={() => setShowConfirm(!showConfirm)} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors">
+                  {showConfirm ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+              {errors.confirm_password && <p className="text-xs text-destructive">{errors.confirm_password.message}</p>}
+            </div>
+
+            {serverError && (
+              <div className="rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">{serverError}</div>
+            )}
+
+            <Button type="submit" className="w-full h-11 gap-2 font-semibold mt-1" disabled={isSubmitting}>
+              {isSubmitting ? (
+                <div className="w-4 h-4 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin" />
+              ) : (<>{t("Daftar", "Sign Up")} <ArrowRight className="w-4 h-4" /></>)}
+            </Button>
+          </form>
+
+          <div className="text-center">
+            <p className="text-sm text-muted-foreground">
+              {t("Sudah punya akun?", "Already have an account?")}{" "}
+              <Link to="/login" className="font-semibold text-foreground hover:underline underline-offset-4">{t("Masuk", "Sign In")}</Link>
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
